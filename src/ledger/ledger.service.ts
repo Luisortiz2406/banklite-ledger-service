@@ -4,23 +4,37 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import { And, DataSource, EntityManager, FindOptionsWhere, In, LessThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { AccountsClientService, LedgerAccountInfo } from './accounts-client.service';
 import { CreditDto } from './dto/credit.dto';
+import { DebitDto } from './dto/debit.dto';
+import { DepositDto } from './dto/deposit.dto';
+import { ReversalDto } from './dto/reversal.dto';
+import { StatementQueryDto, TransactionsQueryDto } from './dto/transactions-query.dto';
 import { TransferDto } from './dto/transfer.dto';
 import { LedgerBalance } from './entities/ledger-balance.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
-import { LedgerTransaction } from './entities/ledger-transaction.entity';
-import { EventPublisherService } from './event-publisher.service';
+import { LedgerTransaction, LedgerTransactionType } from './entities/ledger-transaction.entity';
+import { OutboxService } from './outbox.service';
 
+// Cuentas del sistema (contrapartida de la doble partida). Pueden quedar en negativo.
+// Compensación: abonos externos y cargos internos (p. ej. compras con tarjeta).
 const CLEARING_ACCOUNTS: Record<string, string> = {
   COP: '00000000-0000-4000-8000-000000000001',
   USD: '00000000-0000-4000-8000-000000000002',
 };
+// Origen de las consignaciones de prueba: separado para poder identificarlas y depurarlas.
+const DEMO_DEPOSIT_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000003',
+  USD: '00000000-0000-4000-8000-000000000004',
+};
+const SYSTEM_ACCOUNT_IDS = new Set([
+  ...Object.values(CLEARING_ACCOUNTS),
+  ...Object.values(DEMO_DEPOSIT_ACCOUNTS),
+]);
 
 // Errores de PostgreSQL que se resuelven reintentando la transacción completa:
 // 40001 serialization_failure, 40P01 deadlock_detected y 23505 unique_violation
@@ -32,6 +46,40 @@ const MAX_TX_ATTEMPTS = 4;
 // Los límites diarios/mensuales se cuentan en hora de Colombia (UTC-5, sin horario de verano).
 const BOGOTA_OFFSET_MS = 5 * 60 * 60 * 1000;
 
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_STATEMENT_DAYS = 366;
+const MAX_STATEMENT_MOVEMENTS = 1000;
+const DEFAULT_DEMO_DEPOSIT_MAX = 5_000_000;
+
+const EVENT_TRANSACTION_COMPLETED = 'transaction.completed';
+
+interface Limits {
+  dailyLimit: number;
+  monthlyLimit: number;
+}
+
+interface Posting {
+  idempotencyKey: string;
+  userId: string | null;
+  type: LedgerTransactionType;
+  // Cuenta que se debita (asiento negativo) y cuenta que se acredita (asiento positivo).
+  fromAccountId: string;
+  toAccountId: string;
+  amount: string;
+  currency: string;
+  description: string;
+  sourceAccountNumber?: string | null;
+  destinationAccountNumber?: string | null;
+  reversedTransactionId?: string | null;
+  // Cuenta de cliente que no puede quedar en negativo (las del sistema sí pueden).
+  requireFundsIn?: string;
+  limits?: Limits;
+  // Una reentrega con la misma clave de idempotencia debe ser exactamente la misma operación.
+  isSameOperation: (existing: LedgerTransaction) => boolean;
+  // Eventos transaction.completed (uno por titular afectado), guardados en el outbox.
+  events: (transaction: LedgerTransaction) => Record<string, unknown>[];
+}
+
 @Injectable()
 export class LedgerService {
   constructor(
@@ -40,11 +88,11 @@ export class LedgerService {
     @InjectRepository(LedgerEntry) private readonly entries: Repository<LedgerEntry>,
     @InjectRepository(LedgerTransaction) private readonly transactions: Repository<LedgerTransaction>,
     private readonly accounts: AccountsClientService,
-    private readonly events: EventPublisherService,
+    private readonly outbox: OutboxService,
     private readonly config: ConfigService,
   ) {}
 
-  async getBalance(accountId: string, userId: string, accessToken: string) {
+  async getBalance(accountId: string, accessToken: string) {
     const account = await this.accounts.getOwnedAccount(accountId, accessToken);
     const balance = await this.balances.findOne({ where: { accountId } });
     return {
@@ -54,36 +102,75 @@ export class LedgerService {
     };
   }
 
-  async getTransactions(accountId: string, userId: string, accessToken: string) {
+  /** Movimientos de una cuenta propia, del más reciente al más antiguo, paginados y filtrables por fecha. */
+  async getTransactions(accountId: string, accessToken: string, query: TransactionsQueryDto) {
     await this.accounts.getOwnedAccount(accountId, accessToken);
+    const page = query.page ?? 1;
+    const limit = query.limit ?? DEFAULT_PAGE_SIZE;
+    const from = query.from ? new Date(query.from) : null;
+    const to = query.to ? new Date(query.to) : null;
+    if (from && to && from >= to) throw new BadRequestException('La fecha inicial debe ser anterior a la final.');
+
+    const where: FindOptionsWhere<LedgerEntry> = { accountId };
+    if (from && to) where.createdAt = And(MoreThanOrEqual(from), LessThan(to));
+    else if (from) where.createdAt = MoreThanOrEqual(from);
+    else if (to) where.createdAt = LessThan(to);
+
     const entries = await this.entries.find({
-      where: { accountId },
-      order: { createdAt: 'DESC' },
-      take: 50,
+      where,
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
-    if (!entries.length) return [];
-    const transactions = await this.transactions.find({
-      where: { id: In(entries.map((entry) => entry.transactionId)) },
-    });
-    const byId = new Map(transactions.map((transaction) => [transaction.id, transaction]));
-    return entries.map((entry) => {
-      const transaction = byId.get(entry.transactionId);
-      return {
-        id: entry.id,
-        transactionId: entry.transactionId,
-        type: transaction?.type ?? 'transfer',
-        direction: Number(entry.amount) >= 0 ? 'in' : 'out',
-        amount: Math.abs(Number(entry.amount)),
-        currency: entry.currency,
-        description: transaction?.description ?? 'Movimiento',
-        counterpartyAccountId: transaction?.type === 'credit'
-          ? null
-          : transaction?.sourceAccountId === accountId
-            ? transaction.destinationAccountId
-            : transaction?.sourceAccountId,
-        createdAt: entry.createdAt,
-      };
-    });
+    return this.toMovements(accountId, entries);
+  }
+
+  /** Extracto: saldo inicial, movimientos del periodo (más antiguo primero) y saldo final. */
+  async getStatement(accountId: string, accessToken: string, query: StatementQueryDto) {
+    const account = await this.accounts.getOwnedAccount(accountId, accessToken);
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (from >= to) throw new BadRequestException('La fecha inicial debe ser anterior a la final.');
+    if (to.getTime() - from.getTime() > MAX_STATEMENT_DAYS * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException(`El extracto puede cubrir máximo ${MAX_STATEMENT_DAYS} días.`);
+    }
+
+    const [[opening], [totals], entries] = await Promise.all([
+      this.dataSource.query(
+        'SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE account_id = $1 AND created_at < $2',
+        [accountId, from],
+      ),
+      this.dataSource.query(
+        `SELECT COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) AS total_in,
+                COALESCE(SUM(-amount) FILTER (WHERE amount < 0), 0) AS total_out,
+                COUNT(*) AS count
+           FROM ledger_entries WHERE account_id = $1 AND created_at >= $2 AND created_at < $3`,
+        [accountId, from, to],
+      ),
+      this.entries.find({
+        where: { accountId, createdAt: And(MoreThanOrEqual(from), LessThan(to)) },
+        order: { createdAt: 'ASC', id: 'ASC' },
+        take: MAX_STATEMENT_MOVEMENTS,
+      }),
+    ]);
+
+    const openingBalance = Number(opening.total);
+    const totalIn = Number(totals.total_in);
+    const totalOut = Number(totals.total_out);
+    return {
+      accountId,
+      accountNumber: account.accountNumber,
+      currency: account.currency,
+      from: from.toISOString(),
+      to: to.toISOString(),
+      openingBalance,
+      totalIn,
+      totalOut,
+      closingBalance: Number((openingBalance + totalIn - totalOut).toFixed(2)),
+      movementCount: Number(totals.count),
+      truncated: Number(totals.count) > entries.length,
+      movements: await this.toMovements(accountId, entries),
+    };
   }
 
   async transfer(dto: TransferDto, userId: string, accessToken: string) {
@@ -102,109 +189,251 @@ export class LedgerService {
     const limits = await this.accounts.getLimits(source.id, accessToken);
     const amount = this.money(dto.amount);
 
-    const result = await this.runSerializable(async (manager) => {
-      const existing = await manager.findOne(LedgerTransaction, { where: { idempotencyKey: dto.idempotencyKey } });
-      if (existing) {
-        if (existing.type !== 'transfer' || existing.userId !== userId || existing.sourceAccountId !== source.id ||
-          existing.destinationAccountId !== destination.id || Number(existing.amount) !== Number(amount)) {
-          throw new ConflictException('La clave de idempotencia ya se usó para otra operación.');
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId,
+      type: 'transfer',
+      fromAccountId: source.id,
+      toAccountId: destination.id,
+      amount,
+      currency: source.currency,
+      description: this.description(dto.description, 'Transferencia'),
+      sourceAccountNumber: source.accountNumber,
+      destinationAccountNumber: destination.accountNumber,
+      requireFundsIn: source.id,
+      limits,
+      isSameOperation: (existing) => existing.type === 'transfer' && existing.userId === userId &&
+        existing.sourceAccountId === source.id && existing.destinationAccountId === destination.id &&
+        Number(existing.amount) === Number(amount),
+      events: (transaction) => {
+        // Un evento por cada titular: quien envía y quien recibe.
+        const events = [this.eventPayload(transaction, source.idUser, 'out')];
+        if (destination.idUser !== source.idUser) {
+          events.push(this.eventPayload(transaction, destination.idUser, 'in'));
         }
-        return { transaction: existing, created: false };
-      }
-
-      const lockedBalances = await this.lockBalances(manager, [source.id, destination.id], source.currency);
-      const sourceBalance = Number(lockedBalances.get(source.id));
-      if (sourceBalance < Number(amount)) throw new BadRequestException('Saldo insuficiente.');
-      await this.assertWithinLimits(manager, source.id, Number(amount), limits);
-
-      const row = manager.create(LedgerTransaction, {
-        idempotencyKey: dto.idempotencyKey,
-        userId,
-        type: 'transfer',
-        sourceAccountId: source.id,
-        destinationAccountId: destination.id,
-        amount,
-        currency: source.currency,
-        description: this.description(dto.description, 'Transferencia'),
-      });
-      await manager.save(row);
-      await manager.save(LedgerEntry, [
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: source.id, amount: `-${amount}`, currency: source.currency }),
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: destination.id, amount, currency: source.currency }),
-      ]);
-      await manager.query('UPDATE ledger_balances SET balance = balance - $1::numeric, updated_at = NOW() WHERE account_id = $2', [amount, source.id]);
-      await manager.query('UPDATE ledger_balances SET balance = balance + $1::numeric, updated_at = NOW() WHERE account_id = $2', [amount, destination.id]);
-      return { transaction: row, created: true };
+        return events;
+      },
     });
-
-    if (result.created) {
-      const common = {
-        transactionId: result.transaction.id,
-        type: 'transfer',
-        sourceAccountId: source.id,
-        sourceAccountNumber: source.accountNumber,
-        destinationAccountId: destination.id,
-        destinationAccountNumber: destination.accountNumber,
-        amount: Number(result.transaction.amount),
-        currency: result.transaction.currency,
-      };
-      // Un evento por cada titular: quien envía y quien recibe.
-      await this.events.publishTransactionCompleted({ ...common, idUser: userId, direction: 'out' });
-      if (destination.idUser !== userId) {
-        await this.events.publishTransactionCompleted({ ...common, idUser: destination.idUser, direction: 'in' });
-      }
-    }
-    return result.transaction;
   }
 
+  /** Abono externo (uso interno) contra la cuenta de compensación. */
   async credit(dto: CreditDto) {
     const destination = await this.accounts.getInternalAccount(dto.accountId);
     this.assertActive(destination, 'destino');
-    const clearingAccountId = CLEARING_ACCOUNTS[destination.currency];
-    if (!clearingAccountId) throw new BadRequestException('Moneda no soportada para créditos internos.');
+    const clearingAccountId = this.systemAccount(CLEARING_ACCOUNTS, destination.currency);
     const amount = this.money(dto.amount);
 
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: null,
+      type: 'credit',
+      fromAccountId: clearingAccountId,
+      toAccountId: destination.id,
+      amount,
+      currency: destination.currency,
+      description: this.description(dto.description, 'Abono'),
+      destinationAccountNumber: destination.accountNumber,
+      isSameOperation: (existing) => existing.type === 'credit' &&
+        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
+      events: (transaction) => [this.eventPayload(transaction, destination.idUser, 'in')],
+    });
+  }
+
+  /** Configuración que la app consulta para mostrar (o no) la consignación de prueba. */
+  getDemoDepositsConfig() {
+    return { enabled: this.demoDepositsBlockedReason() === null, maxAmount: this.demoDepositMax() };
+  }
+
+  /** Consignación de prueba del titular a su propia cuenta, contra la cuenta del sistema de depósitos. */
+  async deposit(accountId: string, dto: DepositDto, userId: string, accessToken: string) {
+    const blockedReason = this.demoDepositsBlockedReason();
+    if (blockedReason) throw new ForbiddenException(blockedReason);
+    const max = this.demoDepositMax();
+    if (dto.amount > max) {
+      throw new BadRequestException(`La consignación de prueba no puede superar ${max}.`);
+    }
+
+    const account = await this.accounts.getOwnedAccount(accountId, accessToken);
+    this.assertActive(account, 'destino');
+    const systemAccountId = this.systemAccount(DEMO_DEPOSIT_ACCOUNTS, account.currency);
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId,
+      type: 'deposit',
+      fromAccountId: systemAccountId,
+      toAccountId: account.id,
+      amount,
+      currency: account.currency,
+      description: this.description(dto.description, 'Consignación de prueba'),
+      destinationAccountNumber: account.accountNumber,
+      isSameOperation: (existing) => existing.type === 'deposit' && existing.userId === userId &&
+        existing.destinationAccountId === account.id && Number(existing.amount) === Number(amount),
+      events: (transaction) => [this.eventPayload(transaction, account.idUser, 'in')],
+    });
+  }
+
+  /** Cargo interno (p. ej. compra con tarjeta): exige fondos y respeta los límites de la cuenta. */
+  async debit(dto: DebitDto) {
+    const source = await this.accounts.getInternalAccount(dto.accountId);
+    this.assertActive(source, 'origen');
+    const clearingAccountId = this.systemAccount(CLEARING_ACCOUNTS, source.currency);
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: source.idUser,
+      type: 'debit',
+      fromAccountId: source.id,
+      toAccountId: clearingAccountId,
+      amount,
+      currency: source.currency,
+      description: this.description(dto.description, 'Cargo'),
+      sourceAccountNumber: source.accountNumber,
+      requireFundsIn: source.id,
+      limits: { dailyLimit: Number(source.dailyLimit ?? 0), monthlyLimit: Number(source.monthlyLimit ?? 0) },
+      isSameOperation: (existing) => existing.type === 'debit' &&
+        existing.sourceAccountId === source.id && Number(existing.amount) === Number(amount),
+      events: (transaction) => [this.eventPayload(transaction, source.idUser, 'out')],
+    });
+  }
+
+  /**
+   * Reverso (uso interno): anula una transacción con los asientos contrarios.
+   * Cada transacción se puede reversar una sola vez y los reversos no se reversan.
+   */
+  async reverse(transactionId: string, dto: ReversalDto) {
+    const original = await this.transactions.findOne({ where: { id: transactionId } });
+    if (!original) throw new NotFoundException('Transacción no encontrada.');
+    if (original.type === 'reversal') throw new BadRequestException('Un reverso no se puede reversar.');
+    if (!original.sourceAccountId) throw new BadRequestException('La transacción no tiene cuenta de origen.');
+
+    // El dinero vuelve: sale de quien lo recibió y entra a quien lo envió.
+    const fromAccountId = original.destinationAccountId;
+    const toAccountId = original.sourceAccountId;
+    const [fromOwner, toOwner] = await Promise.all([
+      this.ownerOf(fromAccountId),
+      this.ownerOf(toAccountId),
+    ]);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: null,
+      type: 'reversal',
+      fromAccountId,
+      toAccountId,
+      amount: original.amount,
+      currency: original.currency,
+      description: `Reverso: ${dto.reason.trim()}`.slice(0, 140),
+      sourceAccountNumber: original.destinationAccountNumber,
+      destinationAccountNumber: original.sourceAccountNumber,
+      reversedTransactionId: original.id,
+      // Si quien recibió ya gastó el dinero, el reverso no puede dejarle saldo negativo.
+      requireFundsIn: SYSTEM_ACCOUNT_IDS.has(fromAccountId) ? undefined : fromAccountId,
+      isSameOperation: (existing) => existing.type === 'reversal' && existing.reversedTransactionId === original.id,
+      events: (transaction) => {
+        const events: Record<string, unknown>[] = [];
+        if (fromOwner) events.push(this.eventPayload(transaction, fromOwner, 'out'));
+        if (toOwner && toOwner !== fromOwner) events.push(this.eventPayload(transaction, toOwner, 'in'));
+        return events;
+      },
+    });
+  }
+
+  /**
+   * Cuadre (uso interno): verifica que cada saldo sea igual a la suma de sus asientos
+   * y que cada transacción sume cero. También informa los eventos sin publicar.
+   */
+  async reconcile() {
+    const [balanceMismatches, orphanEntries, unbalancedTransactions, [pending]] = await Promise.all([
+      this.dataSource.query(
+        `SELECT b.account_id AS "accountId", b.balance::float8 AS balance,
+                COALESCE(SUM(e.amount), 0)::float8 AS "entriesTotal"
+           FROM ledger_balances b LEFT JOIN ledger_entries e ON e.account_id = b.account_id
+          GROUP BY b.account_id, b.balance
+         HAVING b.balance <> COALESCE(SUM(e.amount), 0)`,
+      ),
+      this.dataSource.query(
+        `SELECT e.account_id AS "accountId", SUM(e.amount)::float8 AS "entriesTotal"
+           FROM ledger_entries e LEFT JOIN ledger_balances b ON b.account_id = e.account_id
+          WHERE b.account_id IS NULL GROUP BY e.account_id`,
+      ),
+      this.dataSource.query(
+        `SELECT transaction_id AS "transactionId", SUM(amount)::float8 AS total, COUNT(*)::int AS entries
+           FROM ledger_entries GROUP BY transaction_id
+         HAVING SUM(amount) <> 0 OR COUNT(*) <> 2`,
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*)::int AS count, MIN(created_at) AS oldest
+           FROM ledger_outbox WHERE published_at IS NULL`,
+      ),
+    ]);
+    return {
+      ok: !balanceMismatches.length && !orphanEntries.length && !unbalancedTransactions.length,
+      checkedAt: new Date().toISOString(),
+      balanceMismatches,
+      orphanEntries,
+      unbalancedTransactions,
+      pendingEvents: { count: pending.count, oldest: pending.oldest },
+    };
+  }
+
+  /** Núcleo común: doble partida en una transacción SERIALIZABLE, con idempotencia y eventos en el outbox. */
+  private async post(posting: Posting): Promise<LedgerTransaction> {
     const result = await this.runSerializable(async (manager) => {
-      const existing = await manager.findOne(LedgerTransaction, { where: { idempotencyKey: dto.idempotencyKey } });
+      const existing = await manager.findOne(LedgerTransaction, { where: { idempotencyKey: posting.idempotencyKey } });
       if (existing) {
-        if (existing.type !== 'credit' || existing.destinationAccountId !== destination.id || Number(existing.amount) !== Number(amount)) {
+        if (!posting.isSameOperation(existing)) {
           throw new ConflictException('La clave de idempotencia ya se usó para otra operación.');
         }
         return { transaction: existing, created: false };
       }
-      await this.lockBalances(manager, [clearingAccountId, destination.id], destination.currency);
+      if (posting.reversedTransactionId) {
+        const alreadyReversed = await manager.findOne(LedgerTransaction, {
+          where: { reversedTransactionId: posting.reversedTransactionId },
+        });
+        if (alreadyReversed) throw new ConflictException('La transacción ya fue reversada.');
+      }
+
+      const lockedBalances = await this.lockBalances(
+        manager,
+        [posting.fromAccountId, posting.toAccountId],
+        posting.currency,
+      );
+      if (posting.requireFundsIn && Number(lockedBalances.get(posting.requireFundsIn)) < Number(posting.amount)) {
+        throw new BadRequestException('Saldo insuficiente.');
+      }
+      if (posting.limits) {
+        await this.assertWithinLimits(manager, posting.fromAccountId, Number(posting.amount), posting.limits);
+      }
+
       const row = manager.create(LedgerTransaction, {
-        idempotencyKey: dto.idempotencyKey,
-        userId: null,
-        type: 'credit',
-        sourceAccountId: clearingAccountId,
-        destinationAccountId: destination.id,
-        amount,
-        currency: destination.currency,
-        description: this.description(dto.description, 'Abono'),
+        idempotencyKey: posting.idempotencyKey,
+        userId: posting.userId,
+        type: posting.type,
+        sourceAccountId: posting.fromAccountId,
+        destinationAccountId: posting.toAccountId,
+        sourceAccountNumber: posting.sourceAccountNumber ?? null,
+        destinationAccountNumber: posting.destinationAccountNumber ?? null,
+        reversedTransactionId: posting.reversedTransactionId ?? null,
+        amount: posting.amount,
+        currency: posting.currency,
+        description: posting.description,
       });
       await manager.save(row);
       await manager.save(LedgerEntry, [
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: clearingAccountId, amount: `-${amount}`, currency: destination.currency }),
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: destination.id, amount, currency: destination.currency }),
+        manager.create(LedgerEntry, { transactionId: row.id, accountId: posting.fromAccountId, amount: `-${posting.amount}`, currency: posting.currency }),
+        manager.create(LedgerEntry, { transactionId: row.id, accountId: posting.toAccountId, amount: posting.amount, currency: posting.currency }),
       ]);
-      await manager.query('UPDATE ledger_balances SET balance = balance - $1::numeric, updated_at = NOW() WHERE account_id = $2', [amount, clearingAccountId]);
-      await manager.query('UPDATE ledger_balances SET balance = balance + $1::numeric, updated_at = NOW() WHERE account_id = $2', [amount, destination.id]);
+      await manager.query('UPDATE ledger_balances SET balance = balance - $1::numeric, updated_at = NOW() WHERE account_id = $2', [posting.amount, posting.fromAccountId]);
+      await manager.query('UPDATE ledger_balances SET balance = balance + $1::numeric, updated_at = NOW() WHERE account_id = $2', [posting.amount, posting.toAccountId]);
+      await this.outbox.enqueue(manager, EVENT_TRANSACTION_COMPLETED, posting.events(row));
       return { transaction: row, created: true };
     });
 
-    if (result.created) {
-      await this.events.publishTransactionCompleted({
-        idUser: destination.idUser,
-        transactionId: result.transaction.id,
-        type: 'credit',
-        direction: 'in',
-        destinationAccountId: destination.id,
-        destinationAccountNumber: destination.accountNumber,
-        amount: Number(result.transaction.amount),
-        currency: result.transaction.currency,
-      });
-    }
+    // Publicación inmediata; si falla, el relay del outbox la reintenta.
+    if (result.created) void this.outbox.flush();
     return result.transaction;
   }
 
@@ -219,6 +448,78 @@ export class LedgerService {
         await new Promise((resolve) => setTimeout(resolve, 20 * attempt + Math.random() * 30));
       }
     }
+  }
+
+  private eventPayload(transaction: LedgerTransaction, idUser: string, direction: 'in' | 'out') {
+    return {
+      idUser,
+      direction,
+      transactionId: transaction.id,
+      type: transaction.type,
+      sourceAccountId: transaction.sourceAccountId,
+      sourceAccountNumber: transaction.sourceAccountNumber,
+      destinationAccountId: transaction.destinationAccountId,
+      destinationAccountNumber: transaction.destinationAccountNumber,
+      reversedTransactionId: transaction.reversedTransactionId,
+      amount: Number(transaction.amount),
+      currency: transaction.currency,
+      description: transaction.description,
+      createdAt: transaction.createdAt,
+    };
+  }
+
+  private async toMovements(accountId: string, entries: LedgerEntry[]) {
+    if (!entries.length) return [];
+    const transactions = await this.transactions.find({
+      where: { id: In([...new Set(entries.map((entry) => entry.transactionId))]) },
+    });
+    const byId = new Map(transactions.map((transaction) => [transaction.id, transaction]));
+    return entries.map((entry) => {
+      const transaction = byId.get(entry.transactionId);
+      const counterpartyNumber = transaction?.sourceAccountId === accountId
+        ? transaction?.destinationAccountNumber
+        : transaction?.sourceAccountNumber;
+      return {
+        id: entry.id,
+        transactionId: entry.transactionId,
+        type: transaction?.type ?? 'transfer',
+        direction: Number(entry.amount) >= 0 ? 'in' : 'out',
+        amount: Math.abs(Number(entry.amount)),
+        currency: entry.currency,
+        description: transaction?.description ?? 'Movimiento',
+        // Solo los últimos 4 dígitos: no se expone el número ni el UUID de la cuenta de otra persona.
+        counterpartyAccountLast4: counterpartyNumber ? counterpartyNumber.slice(-4) : null,
+        reversedTransactionId: transaction?.reversedTransactionId ?? null,
+        createdAt: entry.createdAt,
+      };
+    });
+  }
+
+  private async ownerOf(accountId: string): Promise<string | null> {
+    if (SYSTEM_ACCOUNT_IDS.has(accountId)) return null;
+    return (await this.accounts.getInternalAccount(accountId)).idUser;
+  }
+
+  /** null si se permiten las consignaciones de prueba; si no, el motivo. En producción nunca se permiten. */
+  private demoDepositsBlockedReason(): string | null {
+    if (this.config.get<string>('NODE_ENV') === 'production') {
+      return 'Las consignaciones de prueba están deshabilitadas en producción.';
+    }
+    if (this.config.get<string>('ENABLE_DEMO_DEPOSITS') !== 'true') {
+      return 'Las consignaciones de prueba no están habilitadas.';
+    }
+    return null;
+  }
+
+  private demoDepositMax(): number {
+    const configured = Number(this.config.get<string>('DEMO_DEPOSIT_MAX_AMOUNT'));
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_DEMO_DEPOSIT_MAX;
+  }
+
+  private systemAccount(accounts: Record<string, string>, currency: string): string {
+    const id = accounts[currency];
+    if (!id) throw new BadRequestException(`Moneda no soportada: ${currency}.`);
+    return id;
   }
 
   private assertActive(account: LedgerAccountInfo, label: string) {
@@ -254,33 +555,26 @@ export class LedgerService {
     return balances;
   }
 
-  private async assertWithinLimits(
-    manager: EntityManager,
-    accountId: string,
-    amount: number,
-    limits: { dailyLimit: number; monthlyLimit: number },
-  ) {
+  private async assertWithinLimits(manager: EntityManager, accountId: string, amount: number, limits: Limits) {
     // "Ahora" expresado en hora de Bogotá; los inicios se devuelven como instantes UTC reales.
     const bogota = new Date(Date.now() - BOGOTA_OFFSET_MS);
     const dayStart = new Date(
       Date.UTC(bogota.getUTCFullYear(), bogota.getUTCMonth(), bogota.getUTCDate()) + BOGOTA_OFFSET_MS,
     );
     const monthStart = new Date(Date.UTC(bogota.getUTCFullYear(), bogota.getUTCMonth(), 1) + BOGOTA_OFFSET_MS);
-    const [dailyRows, monthlyRows] = await Promise.all([
-      manager.query(
-        'SELECT COALESCE(SUM(-amount), 0) AS total FROM ledger_entries WHERE account_id = $1 AND amount < 0 AND created_at >= $2',
-        [accountId, dayStart],
-      ),
-      manager.query(
-        'SELECT COALESCE(SUM(-amount), 0) AS total FROM ledger_entries WHERE account_id = $1 AND amount < 0 AND created_at >= $2',
-        [accountId, monthStart],
-      ),
-    ]);
+    // Los reversos no consumen cupo: devuelven dinero, no son gasto del titular.
+    const spentSince = (since: Date) => manager.query(
+      `SELECT COALESCE(SUM(-e.amount), 0) AS total
+         FROM ledger_entries e JOIN ledger_transactions t ON t.id = e.transaction_id
+        WHERE e.account_id = $1 AND e.amount < 0 AND e.created_at >= $2 AND t.type <> 'reversal'`,
+      [accountId, since],
+    );
+    const [dailyRows, monthlyRows] = await Promise.all([spentSince(dayStart), spentSince(monthStart)]);
     if (Number(dailyRows[0].total) + amount > Number(limits.dailyLimit)) {
-      throw new ForbiddenException('La transferencia supera el límite diario de la cuenta.');
+      throw new ForbiddenException('La operación supera el límite diario de la cuenta.');
     }
     if (Number(monthlyRows[0].total) + amount > Number(limits.monthlyLimit)) {
-      throw new ForbiddenException('La transferencia supera el límite mensual de la cuenta.');
+      throw new ForbiddenException('La operación supera el límite mensual de la cuenta.');
     }
   }
 }

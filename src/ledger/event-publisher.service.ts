@@ -41,7 +41,7 @@ export class EventPublisherService implements OnModuleInit, OnModuleDestroy {
       await channel.assertExchange(this.config.get<string>('RABBITMQ_EXCHANGE', 'banklite.events'), 'topic', { durable: true });
       this.channel = channel;
     } catch (error) {
-      this.logger.warn(`RabbitMQ no disponible; se publicarán transacciones sin evento: ${(error as Error).message}`);
+      this.logger.warn(`RabbitMQ no disponible; los eventos quedan en el outbox hasta reconectar: ${(error as Error).message}`);
       // Si la conexión abrió pero falló el canal, se cierra para no dejarla colgada.
       await this.connection?.close().catch(() => undefined);
       this.connection = null;
@@ -58,20 +58,20 @@ export class EventPublisherService implements OnModuleInit, OnModuleDestroy {
     }, RECONNECT_DELAY_MS);
   }
 
-  async publishTransactionCompleted(data: Record<string, unknown>) {
-    if (!this.channel) return;
-    const event = 'transaction.completed';
+  isReady() {
+    return this.channel !== null;
+  }
+
+  /** Publica y espera la confirmación del broker. Lanza si no se pudo, para que el outbox reintente. */
+  async publish(routingKey: string, message: Record<string, unknown>) {
+    const channel = this.channel;
+    if (!channel) throw new Error('RabbitMQ no está conectado');
     const exchange = this.config.get<string>('RABBITMQ_EXCHANGE', 'banklite.events');
-    try {
-      this.channel.publish(exchange, event, Buffer.from(JSON.stringify({
-        event,
-        occurredAt: new Date().toISOString(),
-        data,
-      })), { persistent: true, contentType: 'application/json' });
-      await this.channel.waitForConfirms();
-    } catch (error) {
-      this.logger.error(`No se pudo publicar ${event}: ${(error as Error).message}`);
-    }
+    channel.publish(exchange, routingKey, Buffer.from(JSON.stringify(message)), {
+      persistent: true,
+      contentType: 'application/json',
+    });
+    await channel.waitForConfirms();
   }
 
   async onModuleDestroy() {

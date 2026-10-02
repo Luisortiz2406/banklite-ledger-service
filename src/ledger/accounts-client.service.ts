@@ -21,10 +21,10 @@ export class AccountsClientService {
       Authorization: `Bearer ${accessToken}`,
     });
     if (response.status === 403 || response.status === 404) {
-      throw new ForbiddenException('No tienes acceso a la cuenta de origen');
+      throw new ForbiddenException('No tienes acceso a esta cuenta.');
     }
     if (response.status === 401) throw new UnauthorizedException('La sesión no es válida para consultar la cuenta.');
-    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta de origen.');
+    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta.');
     return response.body as LedgerAccountInfo;
   }
 
@@ -33,8 +33,8 @@ export class AccountsClientService {
       `/internal/accounts/${encodeURIComponent(accountId)}/ledger-info`,
       { 'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '' },
     );
-    if (response.status === 404) throw new NotFoundException('Cuenta destino no encontrada');
-    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta destino en Account Service.');
+    if (response.status === 404) throw new NotFoundException('Cuenta no encontrada');
+    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta en Account Service.');
     return response.body as LedgerAccountInfo;
   }
 

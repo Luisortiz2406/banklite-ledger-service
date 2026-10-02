@@ -1,4 +1,5 @@
 import { IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { MAX_AMOUNT } from './amount';
 
 export class CreditDto {
   @IsUUID()
@@ -6,7 +7,7 @@ export class CreditDto {
 
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  @Max(9999999999999999)
+  @Max(MAX_AMOUNT)
   amount: number;
 
   @IsUUID()

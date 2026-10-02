@@ -1,4 +1,5 @@
 import { IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
+import { MAX_AMOUNT } from './amount';
 
 export class TransferDto {
   @IsUUID()
@@ -10,7 +11,7 @@ export class TransferDto {
 
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
-  @Max(9999999999999999)
+  @Max(MAX_AMOUNT)
   amount: number;
 
   @IsUUID()
