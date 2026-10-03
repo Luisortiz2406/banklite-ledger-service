@@ -12,6 +12,7 @@ import { AccountsClientService, LedgerAccountInfo } from './accounts-client.serv
 import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
 import { DepositDto } from './dto/deposit.dto';
+import { PaymentDto } from './dto/payment.dto';
 import { ReversalDto } from './dto/reversal.dto';
 import { StatementQueryDto, TransactionsQueryDto } from './dto/transactions-query.dto';
 import { TransferDto } from './dto/transfer.dto';
@@ -31,6 +32,10 @@ const DEMO_DEPOSIT_ACCOUNTS: Record<string, string> = {
   COP: '00000000-0000-4000-8000-000000000003',
   USD: '00000000-0000-4000-8000-000000000004',
 };
+// Dueño de sistema de las cuentas de comercio (account-service): no es un cliente,
+// así que nunca recibe eventos ni notificaciones.
+const MERCHANT_OWNER_ID = '00000000-0000-4000-8000-0000000000aa';
+
 const SYSTEM_ACCOUNT_IDS = new Set([
   ...Object.values(CLEARING_ACCOUNTS),
   ...Object.values(DEMO_DEPOSIT_ACCOUNTS),
@@ -183,6 +188,9 @@ export class LedgerService {
     }
     this.assertActive(source, 'origen');
     this.assertActive(destination, 'destino');
+    if (destination.accountType === 'merchant') {
+      throw new BadRequestException('La cuenta destino es de un comercio y no recibe transferencias.');
+    }
     if (source.currency !== destination.currency) {
       throw new BadRequestException('Las cuentas deben usar la misma moneda.');
     }
@@ -300,6 +308,46 @@ export class LedgerService {
   }
 
   /**
+   * Pago a comercio (uso interno, p. ej. cobro de una suscripción): sale de la
+   * cuenta del cliente y entra a la del comercio. Exige fondos y respeta los
+   * límites de la cuenta, todo dentro de la misma transacción SERIALIZABLE.
+   */
+  async payment(dto: PaymentDto) {
+    const [source, merchant] = await Promise.all([
+      this.accounts.getInternalAccount(dto.sourceAccountId),
+      this.accounts.getInternalAccount(dto.merchantAccountId),
+    ]);
+    if (source.accountType === 'merchant') throw new BadRequestException('La cuenta de origen no puede ser de un comercio.');
+    if (merchant.accountType !== 'merchant') throw new BadRequestException('La cuenta destino no es de un comercio.');
+    this.assertActive(source, 'origen');
+    this.assertActive(merchant, 'comercio');
+    if (source.currency !== merchant.currency) {
+      throw new BadRequestException('Las cuentas deben usar la misma moneda.');
+    }
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: source.idUser,
+      type: 'payment',
+      fromAccountId: source.id,
+      toAccountId: merchant.id,
+      amount,
+      currency: source.currency,
+      description: this.description(dto.description, 'Pago'),
+      sourceAccountNumber: source.accountNumber,
+      destinationAccountNumber: merchant.accountNumber,
+      requireFundsIn: source.id,
+      limits: { dailyLimit: Number(source.dailyLimit ?? 0), monthlyLimit: Number(source.monthlyLimit ?? 0) },
+      isSameOperation: (existing) => existing.type === 'payment' &&
+        existing.sourceAccountId === source.id && existing.destinationAccountId === merchant.id &&
+        Number(existing.amount) === Number(amount),
+      // Solo el cliente recibe el evento: el comercio es una cuenta de sistema.
+      events: (transaction) => [this.eventPayload(transaction, source.idUser, 'out')],
+    });
+  }
+
+  /**
    * Reverso (uso interno): anula una transacción con los asientos contrarios.
    * Cada transacción se puede reversar una sola vez y los reversos no se reversan.
    */
@@ -334,8 +382,10 @@ export class LedgerService {
       isSameOperation: (existing) => existing.type === 'reversal' && existing.reversedTransactionId === original.id,
       events: (transaction) => {
         const events: Record<string, unknown>[] = [];
-        if (fromOwner) events.push(this.eventPayload(transaction, fromOwner, 'out'));
-        if (toOwner && toOwner !== fromOwner) events.push(this.eventPayload(transaction, toOwner, 'in'));
+        if (fromOwner && fromOwner !== MERCHANT_OWNER_ID) events.push(this.eventPayload(transaction, fromOwner, 'out'));
+        if (toOwner && toOwner !== fromOwner && toOwner !== MERCHANT_OWNER_ID) {
+          events.push(this.eventPayload(transaction, toOwner, 'in'));
+        }
         return events;
       },
     });

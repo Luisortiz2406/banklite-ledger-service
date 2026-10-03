@@ -4,6 +4,7 @@ import { InternalKeyGuard } from '../common/guards/internal-key.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
+import { PaymentDto } from './dto/payment.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { ReversalDto } from './dto/reversal.dto';
 import { StatementQueryDto, TransactionsQueryDto } from './dto/transactions-query.dto';
@@ -75,6 +76,12 @@ export class InternalLedgerController {
   @Post('debits')
   debit(@Body() dto: DebitDto) {
     return this.ledger.debit(dto);
+  }
+
+  /** Pago cliente → comercio (cobro de suscripción). */
+  @Post('payments')
+  payment(@Body() dto: PaymentDto) {
+    return this.ledger.payment(dto);
   }
 
   @Post('transactions/:transaction_id/reversal')

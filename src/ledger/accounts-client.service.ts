@@ -5,7 +5,7 @@ import { fetchWithRetry } from '../common/http/fetch-with-retry';
 export interface LedgerAccountInfo {
   id: string;
   accountNumber: string | null;
-  accountType: 'savings' | 'checking';
+  accountType: 'savings' | 'checking' | 'merchant';
   idUser: string;
   currency: string;
   status: string;

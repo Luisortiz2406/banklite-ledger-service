@@ -15,7 +15,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class AdminTransactionsQueryDto {
   @IsOptional() @IsUUID() accountId?: string;
-  @IsOptional() @IsIn(['transfer', 'credit', 'deposit', 'debit', 'reversal']) type?: string;
+  @IsOptional() @IsIn(['transfer', 'credit', 'deposit', 'debit', 'reversal', 'payment']) type?: string;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number;
