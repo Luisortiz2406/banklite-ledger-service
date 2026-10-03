@@ -12,15 +12,19 @@ import { LedgerOutbox } from './entities/ledger-outbox.entity';
 import { LedgerTransaction } from './entities/ledger-transaction.entity';
 import { InternalLedgerController, LedgerController } from './ledger.controller';
 import { LedgerService } from './ledger.service';
+import { AdminLedgerController } from './admin-ledger.controller';
+import { AdminAudit } from '../common/staff/admin-audit.entity';
+import { AdminAuditService } from '../common/staff/admin-audit.service';
+import { StaffAuthGuard } from '../common/staff/staff-auth.guard';
 import { OutboxService } from './outbox.service';
 
 @Module({
   imports: [
     ConfigModule,
     JwtModule.register({}),
-    TypeOrmModule.forFeature([LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox]),
+    TypeOrmModule.forFeature([LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox, AdminAudit]),
   ],
-  controllers: [LedgerController, InternalLedgerController],
-  providers: [LedgerService, AccountsClientService, EventPublisherService, OutboxService, JwtAuthGuard, InternalKeyGuard],
+  controllers: [AdminLedgerController, LedgerController, InternalLedgerController],
+  providers: [LedgerService, AccountsClientService, EventPublisherService, OutboxService, JwtAuthGuard, InternalKeyGuard, AdminAuditService, StaffAuthGuard],
 })
 export class LedgerModule {}

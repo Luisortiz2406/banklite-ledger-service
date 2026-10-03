@@ -6,6 +6,7 @@ import { LedgerBalance } from './ledger/entities/ledger-balance.entity';
 import { LedgerEntry } from './ledger/entities/ledger-entry.entity';
 import { LedgerOutbox } from './ledger/entities/ledger-outbox.entity';
 import { LedgerTransaction } from './ledger/entities/ledger-transaction.entity';
+import { AdminAudit } from './common/staff/admin-audit.entity';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -16,7 +17,7 @@ import { HealthController } from './health.controller';
       useFactory: (config: ConfigService) => ({
         type: 'postgres' as const,
         url: config.get<string>('DATABASE_URL'),
-        entities: [LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox],
+        entities: [LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox, AdminAudit],
         synchronize: true,
         logging: false,
       }),
