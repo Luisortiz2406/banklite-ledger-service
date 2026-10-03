@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { fetchWithRetry } from '../common/http/fetch-with-retry';
 
 export interface LedgerAccountInfo {
   id: string;
@@ -60,10 +61,7 @@ export class AccountsClientService {
     const baseUrl = this.config.get<string>('ACCOUNT_SERVICE_URL', 'http://localhost:3002');
     let response: Response;
     try {
-      response = await fetch(`${baseUrl}${path}`, {
-        headers,
-        signal: AbortSignal.timeout(5000),
-      });
+      response = await fetchWithRetry(`${baseUrl}${path}`, { headers });
     } catch {
       throw new ServiceUnavailableException('No se pudo contactar Account Service.');
     }
