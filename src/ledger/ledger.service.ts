@@ -36,10 +36,24 @@ const DEMO_DEPOSIT_ACCOUNTS: Record<string, string> = {
 // así que nunca recibe eventos ni notificaciones.
 const MERCHANT_OWNER_ID = '00000000-0000-4000-8000-0000000000aa';
 
+// Contrapartida de los abonos que hace el personal del banco desde el panel
+// administrativo: separada para identificarlos en la reconciliación.
+const ADMIN_CREDIT_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000005',
+  USD: '00000000-0000-4000-8000-000000000006',
+};
 const SYSTEM_ACCOUNT_IDS = new Set([
   ...Object.values(CLEARING_ACCOUNTS),
   ...Object.values(DEMO_DEPOSIT_ACCOUNTS),
+  ...Object.values(ADMIN_CREDIT_ACCOUNTS),
 ]);
+// Nombre de cada cuenta del sistema, para mostrarlas en la reconciliación.
+const SYSTEM_ACCOUNT_NAMES: Record<string, string> = Object.fromEntries([
+  ...Object.entries(CLEARING_ACCOUNTS).map(([currency, id]) => [id, `Compensación ${currency}`]),
+  ...Object.entries(DEMO_DEPOSIT_ACCOUNTS).map(([currency, id]) => [id, `Consignaciones de prueba ${currency}`]),
+  ...Object.entries(ADMIN_CREDIT_ACCOUNTS).map(([currency, id]) => [id, `Abonos administrativos ${currency}`]),
+]);
+const DEFAULT_ADMIN_CREDIT_MAX = 10_000_000;
 
 // Errores de PostgreSQL que se resuelven reintentando la transacción completa:
 // 40001 serialization_failure, 40P01 deadlock_detected y 23505 unique_violation
@@ -247,6 +261,44 @@ export class LedgerService {
     });
   }
 
+  /**
+   * Abono administrativo (panel del banco): a una cuenta de cliente por su número,
+   * contra la cuenta de sistema "Abonos administrativos". La idempotencia evita
+   * abonar dos veces si el funcionario reenvía el formulario.
+   */
+  async adminCredit(dto: { accountNumber: string; amount: number; reason: string; idempotencyKey: string }) {
+    const destination = await this.accounts.getInternalAccountByNumber(dto.accountNumber);
+    if (destination.accountType === 'merchant') {
+      throw new BadRequestException('No se pueden hacer abonos a cuentas de comercio.');
+    }
+    this.assertActive(destination, 'destino');
+    const max = this.adminCreditMax();
+    if (dto.amount > max) throw new BadRequestException(`El abono no puede superar ${max}.`);
+    const sourceAccountId = this.systemAccount(ADMIN_CREDIT_ACCOUNTS, destination.currency);
+    const amount = this.money(dto.amount);
+
+    const transaction = await this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: null,
+      type: 'credit',
+      fromAccountId: sourceAccountId,
+      toAccountId: destination.id,
+      amount,
+      currency: destination.currency,
+      description: `Abono BankLite: ${dto.reason.trim()}`.slice(0, 140),
+      destinationAccountNumber: destination.accountNumber,
+      isSameOperation: (existing) => existing.type === 'credit' && existing.sourceAccountId === sourceAccountId &&
+        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
+      events: (row) => [this.eventPayload(row, destination.idUser, 'in')],
+    });
+    return { transaction, account: destination };
+  }
+
+  private adminCreditMax(): number {
+    const configured = Number(this.config.get<string>('ADMIN_CREDIT_MAX_AMOUNT'));
+    return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ADMIN_CREDIT_MAX;
+  }
+
   /** Configuración que la app consulta para mostrar (o no) la consignación de prueba. */
   getDemoDepositsConfig() {
     return { enabled: this.demoDepositsBlockedReason() === null, maxAmount: this.demoDepositMax() };
@@ -396,7 +448,7 @@ export class LedgerService {
    * y que cada transacción sume cero. También informa los eventos sin publicar.
    */
   async reconcile() {
-    const [balanceMismatches, orphanEntries, unbalancedTransactions, [pending]] = await Promise.all([
+    const [balanceMismatches, orphanEntries, unbalancedTransactions, [pending], systemBalances] = await Promise.all([
       this.dataSource.query(
         `SELECT b.account_id AS "accountId", b.balance::float8 AS balance,
                 COALESCE(SUM(e.amount), 0)::float8 AS "entriesTotal"
@@ -418,6 +470,11 @@ export class LedgerService {
         `SELECT COUNT(*)::int AS count, MIN(created_at) AS oldest
            FROM ledger_outbox WHERE published_at IS NULL`,
       ),
+      this.dataSource.query(
+        `SELECT account_id AS "accountId", currency, balance::float8 AS balance
+           FROM ledger_balances WHERE account_id = ANY($1::uuid[]) ORDER BY account_id`,
+        [[...SYSTEM_ACCOUNT_IDS]],
+      ),
     ]);
     return {
       ok: !balanceMismatches.length && !orphanEntries.length && !unbalancedTransactions.length,
@@ -426,6 +483,11 @@ export class LedgerService {
       orphanEntries,
       unbalancedTransactions,
       pendingEvents: { count: pending.count, oldest: pending.oldest },
+      // Contrapartidas del sistema: su saldo negativo es el dinero que entró por cada vía.
+      systemAccounts: systemBalances.map((row: { accountId: string; currency: string; balance: number }) => ({
+        ...row,
+        name: SYSTEM_ACCOUNT_NAMES[row.accountId] ?? 'Cuenta del sistema',
+      })),
     };
   }
 

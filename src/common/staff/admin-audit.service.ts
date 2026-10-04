@@ -28,6 +28,15 @@ export class AdminAuditService {
     );
   }
 
+  /** ¿Ya hay un registro de esta acción para esta transacción? (evita duplicar o perder auditoría al reintentar). */
+  async hasTransactionEntry(action: string, transactionId: string) {
+    return this.repo
+      .createQueryBuilder('a')
+      .where('a.action = :action', { action })
+      .andWhere("a.details ->> 'transactionId' = :transactionId", { transactionId })
+      .getExists();
+  }
+
   async list(page = 1, limit = 50, targetId?: string) {
     const take = Math.min(Math.max(limit, 1), 200);
     const [items, total] = await this.repo.findAndCount({

@@ -1,7 +1,8 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Type } from 'class-transformer';
-import { IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { MAX_AMOUNT } from './dto/amount';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
 import { AdminAuditService } from '../common/staff/admin-audit.service';
@@ -24,6 +25,14 @@ export class AdminTransactionsQueryDto {
 
 export class AdminReversalDto {
   @IsString() @MinLength(5, { message: 'Escribe el motivo (mínimo 5 caracteres).' }) @MaxLength(120) reason: string;
+}
+
+export class AdminCreditDto {
+  @Matches(/^\d{11}$/, { message: 'El número de cuenta debe tener 11 dígitos.' }) accountNumber: string;
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) @Max(MAX_AMOUNT) amount: number;
+  @IsString() @MinLength(5, { message: 'Escribe el motivo (mínimo 5 caracteres).' }) @MaxLength(120) reason: string;
+  // La genera el panel al abrir el formulario: reenviar no abona dos veces.
+  @IsUUID() idempotencyKey: string;
 }
 
 export class AdminAuditQueryDto {
@@ -103,6 +112,33 @@ export class AdminLedgerController {
       details: { reversalId: (reversal as any)?.id ?? null },
     });
     return reversal;
+  }
+
+  /**
+   * Abono a una cuenta de cliente por su número (solo administradores).
+   * Queda en la auditoría con el funcionario, el motivo y la transacción.
+   */
+  @Post('credits')
+  @HttpCode(200)
+  @StaffRoles('admin')
+  async credit(@Body() dto: AdminCreditDto, @Req() req: any) {
+    const { transaction, account } = await this.ledger.adminCredit(dto);
+    // Un reenvío con la misma clave devuelve el mismo abono y no se audita dos veces.
+    if (!(await this.audit.hasTransactionEntry('account.credit', transaction.id))) {
+      await this.audit.record(req.staff, {
+        action: 'account.credit',
+        targetType: 'account',
+        targetId: account.id,
+        reason: dto.reason,
+        details: {
+          transactionId: transaction.id,
+          accountNumber: account.accountNumber,
+          amount: Number(transaction.amount),
+          currency: transaction.currency,
+        },
+      });
+    }
+    return { ...transaction, amount: Number(transaction.amount) };
   }
 
   /** Volumen de las últimas 24 h por tipo (para el tablero). */
