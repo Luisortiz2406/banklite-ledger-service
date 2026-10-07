@@ -15,6 +15,7 @@ export class JwtAuthGuard implements CanActivate {
     try {
       const payload = this.jwt.verify(header.slice('Bearer '.length), {
         secret: this.config.get<string>('JWT_SECRET'),
+        algorithms: ['HS256'],
       });
       if (payload.type !== 'access' || !payload.sub) throw new UnauthorizedException();
       (request as any).user = { idUser: payload.sub };
