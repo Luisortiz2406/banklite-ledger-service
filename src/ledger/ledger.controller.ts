@@ -5,6 +5,8 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
 import { PaymentDto } from './dto/payment.dto';
+import { RewardDto } from './dto/reward.dto';
+import { SavingsDto } from './dto/savings.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { ReversalDto } from './dto/reversal.dto';
 import { StatementQueryDto, TransactionsQueryDto } from './dto/transactions-query.dto';
@@ -82,6 +84,18 @@ export class InternalLedgerController {
   @Post('payments')
   payment(@Body() dto: PaymentDto) {
     return this.ledger.payment(dto);
+  }
+
+  /** Canje de Puntos Banklite desde la cuenta "Recompensas" (rewards-service, payment-service). */
+  @Post('rewards')
+  reward(@Body() dto: RewardDto) {
+    return this.ledger.reward(dto);
+  }
+
+  /** Bolsillos, metas y CDT (savings-service): custodia e intereses. */
+  @Post('savings')
+  savings(@Body() dto: SavingsDto) {
+    return this.ledger.savings(dto);
   }
 
   @Post('transactions/:transaction_id/reversal')

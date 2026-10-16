@@ -13,6 +13,8 @@ import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { PaymentDto } from './dto/payment.dto';
+import { RewardDto } from './dto/reward.dto';
+import { SavingsDto } from './dto/savings.dto';
 import { ReversalDto } from './dto/reversal.dto';
 import { StatementQueryDto, TransactionsQueryDto } from './dto/transactions-query.dto';
 import { TransferDto } from './dto/transfer.dto';
@@ -42,16 +44,43 @@ const ADMIN_CREDIT_ACCOUNTS: Record<string, string> = {
   COP: '00000000-0000-4000-8000-000000000005',
   USD: '00000000-0000-4000-8000-000000000006',
 };
+// Origen de los canjes de Puntos Banklite (plata a la cuenta y recargas que paga el banco).
+const REWARDS_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000007',
+  USD: '00000000-0000-4000-8000-000000000008',
+};
+// Ahorro (savings-service): custodia de bolsillos y metas, custodia de CDT e
+// intereses que paga el banco. La custodia suma lo que los clientes tienen apartado.
+const POCKET_CUSTODY_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000009',
+  USD: '00000000-0000-4000-8000-000000000010',
+};
+const CDT_CUSTODY_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000011',
+  USD: '00000000-0000-4000-8000-000000000012',
+};
+const INTEREST_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000013',
+  USD: '00000000-0000-4000-8000-000000000014',
+};
 const SYSTEM_ACCOUNT_IDS = new Set([
   ...Object.values(CLEARING_ACCOUNTS),
   ...Object.values(DEMO_DEPOSIT_ACCOUNTS),
   ...Object.values(ADMIN_CREDIT_ACCOUNTS),
+  ...Object.values(REWARDS_ACCOUNTS),
+  ...Object.values(POCKET_CUSTODY_ACCOUNTS),
+  ...Object.values(CDT_CUSTODY_ACCOUNTS),
+  ...Object.values(INTEREST_ACCOUNTS),
 ]);
 // Nombre de cada cuenta del sistema, para mostrarlas en la reconciliación.
 const SYSTEM_ACCOUNT_NAMES: Record<string, string> = Object.fromEntries([
   ...Object.entries(CLEARING_ACCOUNTS).map(([currency, id]) => [id, `Compensación ${currency}`]),
   ...Object.entries(DEMO_DEPOSIT_ACCOUNTS).map(([currency, id]) => [id, `Consignaciones de prueba ${currency}`]),
   ...Object.entries(ADMIN_CREDIT_ACCOUNTS).map(([currency, id]) => [id, `Abonos administrativos ${currency}`]),
+  ...Object.entries(REWARDS_ACCOUNTS).map(([currency, id]) => [id, `Recompensas ${currency}`]),
+  ...Object.entries(POCKET_CUSTODY_ACCOUNTS).map(([currency, id]) => [id, `Custodia bolsillos y metas ${currency}`]),
+  ...Object.entries(CDT_CUSTODY_ACCOUNTS).map(([currency, id]) => [id, `Custodia CDT ${currency}`]),
+  ...Object.entries(INTEREST_ACCOUNTS).map(([currency, id]) => [id, `Intereses pagados ${currency}`]),
 ]);
 const DEFAULT_ADMIN_CREDIT_MAX = 10_000_000;
 
@@ -396,6 +425,84 @@ export class LedgerService {
         Number(existing.amount) === Number(amount),
       // Solo el cliente recibe el evento: el comercio es una cuenta de sistema.
       events: (transaction) => [this.eventPayload(transaction, source.idUser, 'out')],
+    });
+  }
+
+  /**
+   * Canje de Puntos Banklite (uso interno, rewards-service / payment-service): un
+   * solo asiento de doble partida desde la cuenta de sistema "Recompensas".
+   * - account: plata a la cuenta del cliente (evento 'in' para el cliente).
+   * - merchant: el banco le paga al comercio en nombre del cliente (p. ej. la
+   *   recarga al operador); no toca el saldo del cliente, así que no hay evento
+   *   de cliente (no es un gasto suyo ni suma puntos).
+   */
+  async reward(dto: RewardDto) {
+    const destination = await this.accounts.getInternalAccount(dto.accountId);
+    this.assertActive(destination, 'destino');
+    if (dto.target === 'merchant' && destination.accountType !== 'merchant') {
+      throw new BadRequestException('La cuenta destino no es de un comercio.');
+    }
+    if (dto.target === 'account') {
+      if (destination.accountType === 'merchant') throw new BadRequestException('La cuenta destino es de un comercio.');
+      if (destination.idUser !== dto.beneficiaryUserId) throw new BadRequestException('La cuenta destino no es del cliente.');
+    }
+    const rewardsAccountId = this.systemAccount(REWARDS_ACCOUNTS, destination.currency);
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: dto.beneficiaryUserId,
+      type: 'reward',
+      fromAccountId: rewardsAccountId,
+      toAccountId: destination.id,
+      amount,
+      currency: destination.currency,
+      description: this.description(dto.description, 'Canje de Puntos Banklite'),
+      destinationAccountNumber: destination.accountNumber,
+      isSameOperation: (existing) => existing.type === 'reward' &&
+        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
+      events: (transaction) => (dto.target === 'account' ? [this.eventPayload(transaction, destination.idUser, 'in')] : []),
+    });
+  }
+
+  /**
+   * Ahorro (uso interno, savings-service): un asiento entre la cuenta del cliente
+   * y la custodia de bolsillos/CDT, o los intereses que paga el banco. Apartar
+   * exige fondos; no consume los límites diario/mensual (la plata sigue siendo
+   * del cliente). No publica eventos: no es un gasto ni un ingreso externo.
+   */
+  async savings(dto: SavingsDto) {
+    const account = await this.accounts.getInternalAccount(dto.accountId);
+    if (account.accountType === 'merchant' || account.idUser !== dto.beneficiaryUserId) {
+      throw new BadRequestException('La cuenta no es del cliente.');
+    }
+    this.assertActive(account, 'ahorro');
+    const custody = this.systemAccount(dto.product === 'cdt' ? CDT_CUSTODY_ACCOUNTS : POCKET_CUSTODY_ACCOUNTS, account.currency);
+    const interest = this.systemAccount(INTEREST_ACCOUNTS, account.currency);
+    const [fromAccountId, toAccountId] = {
+      to_custody: [account.id, custody],
+      from_custody: [custody, account.id],
+      interest_to_custody: [interest, custody],
+      interest_to_account: [interest, account.id],
+    }[dto.kind];
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: dto.beneficiaryUserId,
+      type: 'saving',
+      fromAccountId,
+      toAccountId,
+      amount,
+      currency: account.currency,
+      description: this.description(dto.description, 'Ahorro'),
+      sourceAccountNumber: fromAccountId === account.id ? account.accountNumber : null,
+      destinationAccountNumber: toAccountId === account.id ? account.accountNumber : null,
+      requireFundsIn: fromAccountId === account.id ? account.id : undefined,
+      isSameOperation: (existing) => existing.type === 'saving' &&
+        existing.sourceAccountId === fromAccountId && existing.destinationAccountId === toAccountId &&
+        Number(existing.amount) === Number(amount),
+      events: () => [],
     });
   }
 
