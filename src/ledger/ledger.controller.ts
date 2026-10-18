@@ -19,10 +19,7 @@ export class LedgerController {
   constructor(private readonly ledger: LedgerService) {}
 
   @Get('accounts/:account_id/balance')
-  getBalance(
-    @Param('account_id', ParseUUIDPipe) accountId: string,
-    @Req() request: Request,
-  ) {
+  getBalance(@Param('account_id', ParseUUIDPipe) accountId: string, @Req() request: Request) {
     return this.ledger.getBalance(accountId, (request as any).accessToken);
   }
 
@@ -50,11 +47,7 @@ export class LedgerController {
   }
 
   @Post('accounts/:account_id/deposits')
-  deposit(
-    @Param('account_id', ParseUUIDPipe) accountId: string,
-    @Body() dto: DepositDto,
-    @Req() request: Request,
-  ) {
+  deposit(@Param('account_id', ParseUUIDPipe) accountId: string, @Body() dto: DepositDto, @Req() request: Request) {
     return this.ledger.deposit(accountId, dto, (request as any).user.idUser, (request as any).accessToken);
   }
 
@@ -99,10 +92,7 @@ export class InternalLedgerController {
   }
 
   @Post('transactions/:transaction_id/reversal')
-  reverse(
-    @Param('transaction_id', ParseUUIDPipe) transactionId: string,
-    @Body() dto: ReversalDto,
-  ) {
+  reverse(@Param('transaction_id', ParseUUIDPipe) transactionId: string, @Body() dto: ReversalDto) {
     return this.ledger.reverse(transactionId, dto);
   }
 

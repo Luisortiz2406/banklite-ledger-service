@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { fetchWithRetry } from '../common/http/fetch-with-retry';
 
@@ -30,10 +36,9 @@ export class AccountsClientService {
   }
 
   async getInternalAccount(accountId: string): Promise<LedgerAccountInfo> {
-    const response = await this.fetchAccount(
-      `/internal/accounts/${encodeURIComponent(accountId)}/ledger-info`,
-      { 'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '' },
-    );
+    const response = await this.fetchAccount(`/internal/accounts/${encodeURIComponent(accountId)}/ledger-info`, {
+      'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '',
+    });
     if (response.status === 404) throw new NotFoundException('Cuenta no encontrada');
     if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta en Account Service.');
     return response.body as LedgerAccountInfo;

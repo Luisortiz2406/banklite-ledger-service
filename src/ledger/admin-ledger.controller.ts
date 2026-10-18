@@ -1,7 +1,20 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Type } from 'class-transformer';
-import { IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import {
+  IsDateString,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { MAX_AMOUNT } from './dto/amount';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
@@ -62,7 +75,10 @@ export class AdminLedgerController {
     if (q.type) qb.andWhere('t.type = :type', { type: q.type });
     if (q.from) qb.andWhere('t.createdAt >= :from', { from: q.from });
     if (q.to) qb.andWhere('t.createdAt < :to', { to: q.to });
-    const [items, total] = await qb.skip((page - 1) * limit).take(limit).getManyAndCount();
+    const [items, total] = await qb
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
 
     // Marca cuáles ya fueron reversadas, para que el panel no ofrezca reversarlas otra vez.
     const ids = items.map((t) => t.id);
@@ -74,7 +90,12 @@ export class AdminLedgerController {
           .getRawMany<{ id: string }>()
       : [];
     const reversedIds = new Set(reversed.map((r) => r.id));
-    return { items: items.map((t) => ({ ...t, amount: Number(t.amount), reversed: reversedIds.has(t.id) })), total, page, limit };
+    return {
+      items: items.map((t) => ({ ...t, amount: Number(t.amount), reversed: reversedIds.has(t.id) })),
+      total,
+      page,
+      limit,
+    };
   }
 
   @Get('transactions/:id')
@@ -96,7 +117,12 @@ export class AdminLedgerController {
   @Get('accounts/:id/balance')
   async balance(@Param('id') id: string) {
     const row = UUID.test(id) ? await this.balances.findOne({ where: { accountId: id } }) : null;
-    return { accountId: id, balance: row ? Number(row.balance) : 0, currency: row?.currency ?? null, updatedAt: row?.updatedAt ?? null };
+    return {
+      accountId: id,
+      balance: row ? Number(row.balance) : 0,
+      currency: row?.currency ?? null,
+      updatedAt: row?.updatedAt ?? null,
+    };
   }
 
   @Post('transactions/:id/reversal')

@@ -38,10 +38,14 @@ export class EventPublisherService implements OnModuleInit, OnModuleDestroy {
         this.channel = null;
         if (!this.destroyed) connection.close().catch(() => undefined);
       });
-      await channel.assertExchange(this.config.get<string>('RABBITMQ_EXCHANGE', 'banklite.events'), 'topic', { durable: true });
+      await channel.assertExchange(this.config.get<string>('RABBITMQ_EXCHANGE', 'banklite.events'), 'topic', {
+        durable: true,
+      });
       this.channel = channel;
     } catch (error) {
-      this.logger.warn(`RabbitMQ no disponible; los eventos quedan en el outbox hasta reconectar: ${(error as Error).message}`);
+      this.logger.warn(
+        `RabbitMQ no disponible; los eventos quedan en el outbox hasta reconectar: ${(error as Error).message}`,
+      );
       // Si la conexión abrió pero falló el canal, se cierra para no dejarla colgada.
       await this.connection?.close().catch(() => undefined);
       this.connection = null;

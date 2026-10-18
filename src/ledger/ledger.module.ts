@@ -25,6 +25,15 @@ import { OutboxService } from './outbox.service';
     TypeOrmModule.forFeature([LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox, AdminAudit]),
   ],
   controllers: [AdminLedgerController, LedgerController, InternalLedgerController],
-  providers: [LedgerService, AccountsClientService, EventPublisherService, OutboxService, JwtAuthGuard, InternalKeyGuard, AdminAuditService, StaffAuthGuard],
+  providers: [
+    LedgerService,
+    AccountsClientService,
+    EventPublisherService,
+    OutboxService,
+    JwtAuthGuard,
+    InternalKeyGuard,
+    AdminAuditService,
+    StaffAuthGuard,
+  ],
 })
 export class LedgerModule {}

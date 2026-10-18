@@ -253,8 +253,11 @@ export class LedgerService {
       destinationAccountNumber: destination.accountNumber,
       requireFundsIn: source.id,
       limits,
-      isSameOperation: (existing) => existing.type === 'transfer' && existing.userId === userId &&
-        existing.sourceAccountId === source.id && existing.destinationAccountId === destination.id &&
+      isSameOperation: (existing) =>
+        existing.type === 'transfer' &&
+        existing.userId === userId &&
+        existing.sourceAccountId === source.id &&
+        existing.destinationAccountId === destination.id &&
         Number(existing.amount) === Number(amount),
       events: (transaction) => {
         // Un evento por cada titular: quien envía y quien recibe.
@@ -284,8 +287,10 @@ export class LedgerService {
       currency: destination.currency,
       description: this.description(dto.description, 'Abono'),
       destinationAccountNumber: destination.accountNumber,
-      isSameOperation: (existing) => existing.type === 'credit' &&
-        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
+      isSameOperation: (existing) =>
+        existing.type === 'credit' &&
+        existing.destinationAccountId === destination.id &&
+        Number(existing.amount) === Number(amount),
       events: (transaction) => [this.eventPayload(transaction, destination.idUser, 'in')],
     });
   }
@@ -316,8 +321,11 @@ export class LedgerService {
       currency: destination.currency,
       description: `Abono BankLite: ${dto.reason.trim()}`.slice(0, 140),
       destinationAccountNumber: destination.accountNumber,
-      isSameOperation: (existing) => existing.type === 'credit' && existing.sourceAccountId === sourceAccountId &&
-        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
+      isSameOperation: (existing) =>
+        existing.type === 'credit' &&
+        existing.sourceAccountId === sourceAccountId &&
+        existing.destinationAccountId === destination.id &&
+        Number(existing.amount) === Number(amount),
       events: (row) => [this.eventPayload(row, destination.idUser, 'in')],
     });
     return { transaction, account: destination };
@@ -357,8 +365,11 @@ export class LedgerService {
       currency: account.currency,
       description: this.description(dto.description, 'Consignación de prueba'),
       destinationAccountNumber: account.accountNumber,
-      isSameOperation: (existing) => existing.type === 'deposit' && existing.userId === userId &&
-        existing.destinationAccountId === account.id && Number(existing.amount) === Number(amount),
+      isSameOperation: (existing) =>
+        existing.type === 'deposit' &&
+        existing.userId === userId &&
+        existing.destinationAccountId === account.id &&
+        Number(existing.amount) === Number(amount),
       events: (transaction) => [this.eventPayload(transaction, account.idUser, 'in')],
     });
   }
@@ -382,8 +393,10 @@ export class LedgerService {
       sourceAccountNumber: source.accountNumber,
       requireFundsIn: source.id,
       limits: { dailyLimit: Number(source.dailyLimit ?? 0), monthlyLimit: Number(source.monthlyLimit ?? 0) },
-      isSameOperation: (existing) => existing.type === 'debit' &&
-        existing.sourceAccountId === source.id && Number(existing.amount) === Number(amount),
+      isSameOperation: (existing) =>
+        existing.type === 'debit' &&
+        existing.sourceAccountId === source.id &&
+        Number(existing.amount) === Number(amount),
       events: (transaction) => [this.eventPayload(transaction, source.idUser, 'out')],
     });
   }
@@ -398,7 +411,8 @@ export class LedgerService {
       this.accounts.getInternalAccount(dto.sourceAccountId),
       this.accounts.getInternalAccount(dto.merchantAccountId),
     ]);
-    if (source.accountType === 'merchant') throw new BadRequestException('La cuenta de origen no puede ser de un comercio.');
+    if (source.accountType === 'merchant')
+      throw new BadRequestException('La cuenta de origen no puede ser de un comercio.');
     if (merchant.accountType !== 'merchant') throw new BadRequestException('La cuenta destino no es de un comercio.');
     this.assertActive(source, 'origen');
     this.assertActive(merchant, 'comercio');
@@ -420,8 +434,10 @@ export class LedgerService {
       destinationAccountNumber: merchant.accountNumber,
       requireFundsIn: source.id,
       limits: { dailyLimit: Number(source.dailyLimit ?? 0), monthlyLimit: Number(source.monthlyLimit ?? 0) },
-      isSameOperation: (existing) => existing.type === 'payment' &&
-        existing.sourceAccountId === source.id && existing.destinationAccountId === merchant.id &&
+      isSameOperation: (existing) =>
+        existing.type === 'payment' &&
+        existing.sourceAccountId === source.id &&
+        existing.destinationAccountId === merchant.id &&
         Number(existing.amount) === Number(amount),
       // Solo el cliente recibe el evento: el comercio es una cuenta de sistema.
       events: (transaction) => [this.eventPayload(transaction, source.idUser, 'out')],
@@ -444,7 +460,8 @@ export class LedgerService {
     }
     if (dto.target === 'account') {
       if (destination.accountType === 'merchant') throw new BadRequestException('La cuenta destino es de un comercio.');
-      if (destination.idUser !== dto.beneficiaryUserId) throw new BadRequestException('La cuenta destino no es del cliente.');
+      if (destination.idUser !== dto.beneficiaryUserId)
+        throw new BadRequestException('La cuenta destino no es del cliente.');
     }
     const rewardsAccountId = this.systemAccount(REWARDS_ACCOUNTS, destination.currency);
     const amount = this.money(dto.amount);
@@ -459,9 +476,12 @@ export class LedgerService {
       currency: destination.currency,
       description: this.description(dto.description, 'Canje de Puntos Banklite'),
       destinationAccountNumber: destination.accountNumber,
-      isSameOperation: (existing) => existing.type === 'reward' &&
-        existing.destinationAccountId === destination.id && Number(existing.amount) === Number(amount),
-      events: (transaction) => (dto.target === 'account' ? [this.eventPayload(transaction, destination.idUser, 'in')] : []),
+      isSameOperation: (existing) =>
+        existing.type === 'reward' &&
+        existing.destinationAccountId === destination.id &&
+        Number(existing.amount) === Number(amount),
+      events: (transaction) =>
+        dto.target === 'account' ? [this.eventPayload(transaction, destination.idUser, 'in')] : [],
     });
   }
 
@@ -477,7 +497,10 @@ export class LedgerService {
       throw new BadRequestException('La cuenta no es del cliente.');
     }
     this.assertActive(account, 'ahorro');
-    const custody = this.systemAccount(dto.product === 'cdt' ? CDT_CUSTODY_ACCOUNTS : POCKET_CUSTODY_ACCOUNTS, account.currency);
+    const custody = this.systemAccount(
+      dto.product === 'cdt' ? CDT_CUSTODY_ACCOUNTS : POCKET_CUSTODY_ACCOUNTS,
+      account.currency,
+    );
     const interest = this.systemAccount(INTEREST_ACCOUNTS, account.currency);
     const [fromAccountId, toAccountId] = {
       to_custody: [account.id, custody],
@@ -499,8 +522,10 @@ export class LedgerService {
       sourceAccountNumber: fromAccountId === account.id ? account.accountNumber : null,
       destinationAccountNumber: toAccountId === account.id ? account.accountNumber : null,
       requireFundsIn: fromAccountId === account.id ? account.id : undefined,
-      isSameOperation: (existing) => existing.type === 'saving' &&
-        existing.sourceAccountId === fromAccountId && existing.destinationAccountId === toAccountId &&
+      isSameOperation: (existing) =>
+        existing.type === 'saving' &&
+        existing.sourceAccountId === fromAccountId &&
+        existing.destinationAccountId === toAccountId &&
         Number(existing.amount) === Number(amount),
       events: () => [],
     });
@@ -519,10 +544,7 @@ export class LedgerService {
     // El dinero vuelve: sale de quien lo recibió y entra a quien lo envió.
     const fromAccountId = original.destinationAccountId;
     const toAccountId = original.sourceAccountId;
-    const [fromOwner, toOwner] = await Promise.all([
-      this.ownerOf(fromAccountId),
-      this.ownerOf(toAccountId),
-    ]);
+    const [fromOwner, toOwner] = await Promise.all([this.ownerOf(fromAccountId), this.ownerOf(toAccountId)]);
 
     return this.post({
       idempotencyKey: dto.idempotencyKey,
@@ -642,11 +664,27 @@ export class LedgerService {
       });
       await manager.save(row);
       await manager.save(LedgerEntry, [
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: posting.fromAccountId, amount: `-${posting.amount}`, currency: posting.currency }),
-        manager.create(LedgerEntry, { transactionId: row.id, accountId: posting.toAccountId, amount: posting.amount, currency: posting.currency }),
+        manager.create(LedgerEntry, {
+          transactionId: row.id,
+          accountId: posting.fromAccountId,
+          amount: `-${posting.amount}`,
+          currency: posting.currency,
+        }),
+        manager.create(LedgerEntry, {
+          transactionId: row.id,
+          accountId: posting.toAccountId,
+          amount: posting.amount,
+          currency: posting.currency,
+        }),
       ]);
-      await manager.query('UPDATE ledger_balances SET balance = balance - $1::numeric, updated_at = NOW() WHERE account_id = $2', [posting.amount, posting.fromAccountId]);
-      await manager.query('UPDATE ledger_balances SET balance = balance + $1::numeric, updated_at = NOW() WHERE account_id = $2', [posting.amount, posting.toAccountId]);
+      await manager.query(
+        'UPDATE ledger_balances SET balance = balance - $1::numeric, updated_at = NOW() WHERE account_id = $2',
+        [posting.amount, posting.fromAccountId],
+      );
+      await manager.query(
+        'UPDATE ledger_balances SET balance = balance + $1::numeric, updated_at = NOW() WHERE account_id = $2',
+        [posting.amount, posting.toAccountId],
+      );
       await this.outbox.enqueue(manager, EVENT_TRANSACTION_COMPLETED, posting.events(row));
       return { transaction: row, created: true };
     });
@@ -695,9 +733,10 @@ export class LedgerService {
     const byId = new Map(transactions.map((transaction) => [transaction.id, transaction]));
     return entries.map((entry) => {
       const transaction = byId.get(entry.transactionId);
-      const counterpartyNumber = transaction?.sourceAccountId === accountId
-        ? transaction?.destinationAccountNumber
-        : transaction?.sourceAccountNumber;
+      const counterpartyNumber =
+        transaction?.sourceAccountId === accountId
+          ? transaction?.destinationAccountNumber
+          : transaction?.sourceAccountNumber;
       return {
         id: entry.id,
         transactionId: entry.transactionId,
@@ -770,7 +809,8 @@ export class LedgerService {
       if (row.currency !== currency) throw new ConflictException('La moneda del saldo no coincide con la cuenta.');
       balances.set(row.account_id, row.balance);
     }
-    if (balances.size !== sortedIds.length) throw new NotFoundException('No se pudo inicializar el saldo de la cuenta.');
+    if (balances.size !== sortedIds.length)
+      throw new NotFoundException('No se pudo inicializar el saldo de la cuenta.');
     return balances;
   }
 
@@ -782,12 +822,13 @@ export class LedgerService {
     );
     const monthStart = new Date(Date.UTC(bogota.getUTCFullYear(), bogota.getUTCMonth(), 1) + BOGOTA_OFFSET_MS);
     // Los reversos no consumen cupo: devuelven dinero, no son gasto del titular.
-    const spentSince = (since: Date) => manager.query(
-      `SELECT COALESCE(SUM(-e.amount), 0) AS total
+    const spentSince = (since: Date) =>
+      manager.query(
+        `SELECT COALESCE(SUM(-e.amount), 0) AS total
          FROM ledger_entries e JOIN ledger_transactions t ON t.id = e.transaction_id
         WHERE e.account_id = $1 AND e.amount < 0 AND e.created_at >= $2 AND t.type <> 'reversal'`,
-      [accountId, since],
-    );
+        [accountId, since],
+      );
     const [dailyRows, monthlyRows] = await Promise.all([spentSince(dayStart), spentSince(monthStart)]);
     if (Number(dailyRows[0].total) + amount > Number(limits.dailyLimit)) {
       throw new ForbiddenException('La operación supera el límite diario de la cuenta.');

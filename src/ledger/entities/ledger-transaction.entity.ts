@@ -4,7 +4,8 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 
 // deposit: consignación de prueba. debit: cargo interno (p. ej. compra con tarjeta).
 // reversal: anula otra transacción con los asientos contrarios.
 // payment: pago de un cliente a una cuenta de comercio (cobro de suscripción).
-export type LedgerTransactionType = 'transfer' | 'credit' | 'deposit' | 'debit' | 'reversal' | 'payment' | 'reward' | 'saving';
+export type LedgerTransactionType =
+  'transfer' | 'credit' | 'deposit' | 'debit' | 'reversal' | 'payment' | 'reward' | 'saving';
 
 @Entity('ledger_transactions')
 export class LedgerTransaction {
