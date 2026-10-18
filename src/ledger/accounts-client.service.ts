@@ -1,12 +1,6 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-  ServiceUnavailableException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { fetchWithRetry } from '../common/http/fetch-with-retry';
+import { callService, ExpectOptions, HTTP_TIMEOUTS } from '../common/http/internal-http';
 
 export interface LedgerAccountInfo {
   id: string;
@@ -19,59 +13,67 @@ export interface LedgerAccountInfo {
   monthlyLimit?: number;
 }
 
+/** Cuentas en account-service (solo lecturas). Errores: regla común de common/http/internal-http.ts. */
 @Injectable()
 export class AccountsClientService {
   constructor(private readonly config: ConfigService) {}
 
   async getOwnedAccount(accountId: string, accessToken: string): Promise<LedgerAccountInfo> {
-    const response = await this.fetchAccount(`/accounts/${encodeURIComponent(accountId)}`, {
-      Authorization: `Bearer ${accessToken}`,
-    });
-    if (response.status === 403 || response.status === 404) {
-      throw new ForbiddenException('No tienes acceso a esta cuenta.');
-    }
-    if (response.status === 401) throw new UnauthorizedException('La sesión no es válida para consultar la cuenta.');
-    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta.');
-    return response.body as LedgerAccountInfo;
+    // 403 y 404 se responden igual: no se revela si la cuenta existe.
+    const noAccess = () => new ForbiddenException('No tienes acceso a esta cuenta.');
+    return this.read(
+      `/accounts/${encodeURIComponent(accountId)}`,
+      { Authorization: `Bearer ${accessToken}` },
+      {
+        internal: false,
+        unavailable: 'No se pudo validar la cuenta. Inténtalo de nuevo.',
+        on: { 403: noAccess, 404: noAccess },
+      },
+    );
   }
 
   async getInternalAccount(accountId: string): Promise<LedgerAccountInfo> {
-    const response = await this.fetchAccount(`/internal/accounts/${encodeURIComponent(accountId)}/ledger-info`, {
-      'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '',
+    return this.read(`/internal/accounts/${encodeURIComponent(accountId)}/ledger-info`, this.internalHeaders(), {
+      internal: true,
+      unavailable: 'No se pudo validar la cuenta en Account Service.',
+      on: { 404: () => new NotFoundException('Cuenta no encontrada') },
     });
-    if (response.status === 404) throw new NotFoundException('Cuenta no encontrada');
-    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta en Account Service.');
-    return response.body as LedgerAccountInfo;
   }
 
   async getInternalAccountByNumber(accountNumber: string): Promise<LedgerAccountInfo> {
-    const response = await this.fetchAccount(
+    return this.read(
       `/internal/accounts/number/${encodeURIComponent(accountNumber)}/ledger-info`,
-      { 'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '' },
+      this.internalHeaders(),
+      {
+        internal: true,
+        unavailable: 'No se pudo validar la cuenta destino en Account Service.',
+        on: { 404: () => new NotFoundException('Cuenta destino no encontrada') },
+      },
     );
-    if (response.status === 404) throw new NotFoundException('Cuenta destino no encontrada');
-    if (!response.ok) throw new ServiceUnavailableException('No se pudo validar la cuenta destino en Account Service.');
-    return response.body as LedgerAccountInfo;
   }
 
   async getLimits(accountId: string, accessToken: string) {
-    const response = await this.fetchAccount(`/accounts/${encodeURIComponent(accountId)}/limits`, {
-      Authorization: `Bearer ${accessToken}`,
-    });
-    if (!response.ok) throw new ServiceUnavailableException('No se pudieron consultar los límites de la cuenta.');
-    return response.body as { dailyLimit: number; monthlyLimit: number };
+    return this.read<{ dailyLimit: number; monthlyLimit: number }>(
+      `/accounts/${encodeURIComponent(accountId)}/limits`,
+      { Authorization: `Bearer ${accessToken}` },
+      { internal: false, unavailable: 'No se pudieron consultar los límites de la cuenta.' },
+    );
   }
 
-  private async fetchAccount(path: string, headers: Record<string, string>) {
+  private read<T = LedgerAccountInfo>(
+    path: string,
+    headers: Record<string, string>,
+    options: Omit<ExpectOptions, 'service'>,
+  ): Promise<T> {
     const baseUrl = this.config.get<string>('ACCOUNT_SERVICE_URL', 'http://localhost:3002');
-    let response: Response;
-    try {
-      response = await fetchWithRetry(`${baseUrl}${path}`, { headers });
-    } catch {
-      throw new ServiceUnavailableException('No se pudo contactar Account Service.');
-    }
-    const body = await response.json().catch(() => ({}));
-    if (response.status >= 500) throw new ServiceUnavailableException('Account Service no está disponible.');
-    return { status: response.status, ok: response.ok, body };
+    return callService<T>(
+      `${baseUrl}${path}`,
+      { headers, timeoutMs: HTTP_TIMEOUTS.read, retry: true },
+      { service: 'Account Service', ...options },
+    );
+  }
+
+  private internalHeaders() {
+    return { 'x-internal-key': this.config.get<string>('INTERNAL_API_KEY') || '' };
   }
 }
