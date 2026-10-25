@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { And, DataSource, EntityManager, FindOptionsWhere, In, LessThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { AccountsClientService, LedgerAccountInfo } from './accounts-client.service';
+import { CashInDto } from './dto/cash-in.dto';
 import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
 import { DepositDto } from './dto/deposit.dto';
@@ -63,6 +64,11 @@ const INTEREST_ACCOUNTS: Record<string, string> = {
   COP: '00000000-0000-4000-8000-000000000013',
   USD: '00000000-0000-4000-8000-000000000014',
 };
+// Contrapartida de las recargas con la pasarela Wompi (deposit-service): lo que
+// Wompi le debe al banco por recargas aprobadas. Wompi solo opera en COP.
+const WOMPI_CLEARING_ACCOUNTS: Record<string, string> = {
+  COP: '00000000-0000-4000-8000-000000000015',
+};
 const SYSTEM_ACCOUNT_IDS = new Set([
   ...Object.values(CLEARING_ACCOUNTS),
   ...Object.values(DEMO_DEPOSIT_ACCOUNTS),
@@ -71,6 +77,7 @@ const SYSTEM_ACCOUNT_IDS = new Set([
   ...Object.values(POCKET_CUSTODY_ACCOUNTS),
   ...Object.values(CDT_CUSTODY_ACCOUNTS),
   ...Object.values(INTEREST_ACCOUNTS),
+  ...Object.values(WOMPI_CLEARING_ACCOUNTS),
 ]);
 // Nombre de cada cuenta del sistema, para mostrarlas en la reconciliación.
 const SYSTEM_ACCOUNT_NAMES: Record<string, string> = Object.fromEntries([
@@ -81,6 +88,7 @@ const SYSTEM_ACCOUNT_NAMES: Record<string, string> = Object.fromEntries([
   ...Object.entries(POCKET_CUSTODY_ACCOUNTS).map(([currency, id]) => [id, `Custodia bolsillos y metas ${currency}`]),
   ...Object.entries(CDT_CUSTODY_ACCOUNTS).map(([currency, id]) => [id, `Custodia CDT ${currency}`]),
   ...Object.entries(INTEREST_ACCOUNTS).map(([currency, id]) => [id, `Intereses pagados ${currency}`]),
+  ...Object.entries(WOMPI_CLEARING_ACCOUNTS).map(([currency, id]) => [id, `Compensación Wompi ${currency}`]),
 ]);
 const DEFAULT_ADMIN_CREDIT_MAX = 10_000_000;
 
@@ -289,6 +297,36 @@ export class LedgerService {
       destinationAccountNumber: destination.accountNumber,
       isSameOperation: (existing) =>
         existing.type === 'credit' &&
+        existing.destinationAccountId === destination.id &&
+        Number(existing.amount) === Number(amount),
+      events: (transaction) => [this.eventPayload(transaction, destination.idUser, 'in')],
+    });
+  }
+
+  /**
+   * Recarga con la pasarela Wompi (solo deposit-service): abono a la cuenta del
+   * cliente contra la cuenta de sistema "Compensación Wompi". deposit-service ya
+   * verificó la transacción con Wompi y que la cuenta sea del cliente.
+   */
+  async cashIn(dto: CashInDto) {
+    const destination = await this.accounts.getInternalAccount(dto.accountId);
+    this.assertActive(destination, 'destino');
+    const wompiAccountId = this.systemAccount(WOMPI_CLEARING_ACCOUNTS, destination.currency);
+    const amount = this.money(dto.amount);
+
+    return this.post({
+      idempotencyKey: dto.idempotencyKey,
+      userId: destination.idUser,
+      type: 'deposit',
+      fromAccountId: wompiAccountId,
+      toAccountId: destination.id,
+      amount,
+      currency: destination.currency,
+      description: this.description(dto.description, 'Recarga con Wompi'),
+      destinationAccountNumber: destination.accountNumber,
+      isSameOperation: (existing) =>
+        existing.type === 'deposit' &&
+        existing.sourceAccountId === wompiAccountId &&
         existing.destinationAccountId === destination.id &&
         Number(existing.amount) === Number(amount),
       events: (transaction) => [this.eventPayload(transaction, destination.idUser, 'in')],

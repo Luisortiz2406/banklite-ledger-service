@@ -22,7 +22,7 @@ que la registre por la red interna.
 - `idempotencyKey` (UUID) obligatoria: reenviar la misma clave devuelve la misma transacción y nunca duplica el movimiento.
 - Valida saldo suficiente, cuenta activa, misma moneda y los límites diario/mensual de account-service.
 - Tipos: `transfer`, `deposit`, `credit`, `debit`, `reversal`, `payment`, `reward`, `saving`. Una reversa crea asientos contrarios, no borra.
-- Cuentas de sistema (Compensación, Consignaciones de prueba, Abonos administrativos, Recompensas, Custodia bolsillos y metas, Custodia CDT, Intereses pagados) pueden quedar en negativo.
+- Cuentas de sistema (Compensación, Consignaciones de prueba, Abonos administrativos, Recompensas, Custodia bolsillos y metas, Custodia CDT, Intereses pagados, Compensación Wompi) pueden quedar en negativo.
 - Conciliación: verifica que cada saldo sea igual a la suma de sus asientos.
 
 **Comunicación con otros servicios**
@@ -32,7 +32,7 @@ que la registre por la red interna.
 | Publica eventos | `transaction.completed` (uno por titular afectado) → fraud, compliance, notification, rewards. Los movimientos `saving` y los canjes a comercios no publican eventos. |
 | Consume eventos | — |
 | Llama a | account-service: titular, estado y límites de la cuenta |
-| Lo llaman | transfer, card, payment, rewards y savings: `/ledger/internal/*` y `POST /ledger/transfers`<br>api-gateway (rutas `/ledger/*`) |
+| Lo llaman | transfer, card, payment, rewards, savings y deposit: `/ledger/internal/*` y `POST /ledger/transfers`<br>api-gateway (rutas `/ledger/*`) |
 | Integraciones externas | — |
 
 Todo el tráfico externo entra por el **api-gateway** (único servicio público), que
@@ -143,6 +143,7 @@ A través del gateway las rutas son las mismas (`http://localhost:8080/ledger/..
 | POST | `/ledger/internal/payments` | Pago cliente → comercio (facturas, recargas, QR, suscripciones). |
 | POST | `/ledger/internal/rewards` | Canje de puntos desde la cuenta de sistema Recompensas. |
 | POST | `/ledger/internal/savings` | Bolsillos, metas y CDT: custodia e intereses. |
+| POST | `/ledger/internal/cash-ins` | Recarga con Wompi contra la cuenta de sistema Compensación Wompi (tipo `deposit`). **Solo deposit-service**; idempotente por la clave que deriva del id de la transacción de Wompi. |
 | POST | `/ledger/internal/transactions/:transaction_id/reversal` | Reversa de una transacción. |
 | GET | `/ledger/internal/reconciliation` | Conciliación saldos vs. asientos. |
 
@@ -162,7 +163,7 @@ todas se configuran como variables del servicio, nunca en el código.
 | `STAFF_JWT_SECRET` | **Sí** (no arranca sin ella) | — | Firma de los JWT de empleados del panel (el mismo que en auth-service; distinto de JWT_SECRET). |
 | `ACCOUNT_SERVICE_URL` | Sí | `http://localhost:3002` | URL interna de account-service. |
 | `INTERNAL_API_KEY` | **Sí** (no arranca sin ella) | — | Clave interna **propia** de este servicio; la manda en `x-internal-key` al llamar a otros. |
-| `INTERNAL_TRUSTED_KEYS` | **Sí** (no arranca sin ella) | `transfer:<clave-de-transfer>,card:<clave-de-card>,payment:<clave-de-payment>,rewards:<clave-de-rewards>,savings:<clave-de-savings>` | Claves internas que acepta, `servicio:clave,servicio:clave` (ver `InternalKeyGuard`). |
+| `INTERNAL_TRUSTED_KEYS` | **Sí** (no arranca sin ella) | `transfer:<clave-de-transfer>,card:<clave-de-card>,payment:<clave-de-payment>,rewards:<clave-de-rewards>,savings:<clave-de-savings>,deposit:<clave-de-deposit>` | Claves internas que acepta, `servicio:clave,servicio:clave` (ver `InternalKeyGuard`). |
 | `RABBITMQ_URL` | No | `amqp://banklite:<RABBITMQ_PASSWORD>@localhost:5672` | Conexión a RabbitMQ. Sin ella los eventos quedan en el outbox (o no se consumen). |
 | `RABBITMQ_EXCHANGE` | No | `banklite.events` | Exchange topic de eventos (`banklite.events`). |
 | `NODE_ENV` | No | `development` | `development` en local; `production` en Railway (lo fija el Dockerfile). |
@@ -211,6 +212,7 @@ despliega desde su propio repositorio.
 | [banklite-payment-service](https://github.com/Luisortiz2406/banklite-payment-service) | **Lo llama:** pagos, recargas y pagos QR |
 | [banklite-rewards-service](https://github.com/Luisortiz2406/banklite-rewards-service) | **Lo llama:** canjes de puntos<br>**Envía:** `transaction.completed` |
 | [banklite-savings-service](https://github.com/Luisortiz2406/banklite-savings-service) | **Lo llama:** movimientos de bolsillos, metas y CDT |
+| [banklite-deposit-service](https://github.com/Luisortiz2406/banklite-deposit-service) | **Lo llama:** recargas con Wompi (`POST /ledger/internal/cash-ins`)<br>**Envía:** `transaction.completed` |
 | [banklite-fraud-service](https://github.com/Luisortiz2406/banklite-fraud-service) | **Envía:** `transaction.completed` |
 | [banklite-compliance-service](https://github.com/Luisortiz2406/banklite-compliance-service) | **Envía:** `transaction.completed` |
 | [banklite-notification-service](https://github.com/Luisortiz2406/banklite-notification-service) | **Envía:** `transaction.completed` |

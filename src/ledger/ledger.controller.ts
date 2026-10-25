@@ -1,7 +1,19 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { InternalKeyGuard } from '../common/guards/internal-key.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { CashInDto } from './dto/cash-in.dto';
 import { CreditDto } from './dto/credit.dto';
 import { DebitDto } from './dto/debit.dto';
 import { PaymentDto } from './dto/payment.dto';
@@ -89,6 +101,15 @@ export class InternalLedgerController {
   @Post('savings')
   savings(@Body() dto: SavingsDto) {
     return this.ledger.savings(dto);
+  }
+
+  /** Recarga con la pasarela Wompi: solo la puede pedir deposit-service. */
+  @Post('cash-ins')
+  cashIn(@Body() dto: CashInDto, @Req() request: Request) {
+    if ((request as any).internalCaller !== 'deposit') {
+      throw new ForbiddenException('Solo deposit-service puede registrar recargas.');
+    }
+    return this.ledger.cashIn(dto);
   }
 
   @Post('transactions/:transaction_id/reversal')
