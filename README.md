@@ -212,7 +212,7 @@ despliega desde su propio repositorio.
 | [banklite-payment-service](https://github.com/Luisortiz2406/banklite-payment-service) | **Lo llama:** pagos, recargas y pagos QR |
 | [banklite-rewards-service](https://github.com/Luisortiz2406/banklite-rewards-service) | **Lo llama:** canjes de puntos<br>**Envía:** `transaction.completed` |
 | [banklite-savings-service](https://github.com/Luisortiz2406/banklite-savings-service) | **Lo llama:** movimientos de bolsillos, metas y CDT |
-| [banklite-deposit-service](https://github.com/Luisortiz2406/banklite-deposit-service) | **Lo llama:** recargas con Wompi (`POST /ledger/internal/cash-ins`)<br>**Envía:** `transaction.completed` |
+| [banklite-deposit-service](https://github.com/Luisortiz2406/banklite-deposit-service) | **Lo llama:** recargas con Wompi (`POST /ledger/internal/cash-ins`) |
 | [banklite-fraud-service](https://github.com/Luisortiz2406/banklite-fraud-service) | **Envía:** `transaction.completed` |
 | [banklite-compliance-service](https://github.com/Luisortiz2406/banklite-compliance-service) | **Envía:** `transaction.completed` |
 | [banklite-notification-service](https://github.com/Luisortiz2406/banklite-notification-service) | **Envía:** `transaction.completed` |
