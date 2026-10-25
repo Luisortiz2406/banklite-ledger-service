@@ -19,6 +19,7 @@ import { OutboxService } from './outbox.service';
  */
 
 const DEMO_DEPOSIT_COP = '00000000-0000-4000-8000-000000000003';
+const WOMPI_CLEARING_COP = '00000000-0000-4000-8000-000000000015';
 const ANA = '11111111-1111-4111-8111-111111111111';
 const CARLOS = '22222222-2222-4222-8222-222222222222';
 
@@ -285,5 +286,55 @@ describeWithDb('LedgerService (PostgreSQL)', () => {
   it('la cuenta de consignaciones de prueba no se usa fuera de su flujo', async () => {
     await credit(anaId, 1_000);
     expect(await balanceOf(DEMO_DEPOSIT_COP)).toBe(0);
+  });
+
+  describe('recargas con Wompi (cash-ins)', () => {
+    const cashIn = (amount: number, idempotencyKey = randomUUID(), accountId = anaId) =>
+      ledger.cashIn({ accountId, amount, idempotencyKey, description: 'Recarga Wompi · Tarjeta' });
+
+    it('abona al cliente contra la cuenta Compensación Wompi, con doble partida y un evento de entrada', async () => {
+      const tx = await cashIn(50_000);
+
+      expect(tx.type).toBe('deposit');
+      expect(tx.sourceAccountId).toBe(WOMPI_CLEARING_COP);
+      expect(await balanceOf(anaId)).toBe(50_000);
+      expect(await balanceOf(WOMPI_CLEARING_COP)).toBe(-50_000);
+      const entries = await entriesOf(tx.id);
+      expect(entries.reduce((sum, e) => sum + Number(e.amount), 0)).toBe(0);
+      const outbox = await dataSource.getRepository(LedgerOutbox).find();
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].payload).toMatchObject({ transactionId: tx.id, direction: 'in', idUser: ANA, type: 'deposit' });
+    });
+
+    it('la misma transacción de Wompi (misma clave) no abona dos veces', async () => {
+      const key = randomUUID();
+      const first = await cashIn(50_000, key);
+      const again = await cashIn(50_000, key);
+
+      expect(again.id).toBe(first.id);
+      expect(await balanceOf(anaId)).toBe(50_000);
+      expect(await count(LedgerTransaction)).toBe(1);
+      expect(await count(LedgerOutbox)).toBe(1);
+    });
+
+    it('la misma clave con otro monto u otra cuenta es un conflicto', async () => {
+      const key = randomUUID();
+      await cashIn(50_000, key);
+      await expect(cashIn(60_000, key)).rejects.toBeInstanceOf(ConflictException);
+      await expect(cashIn(50_000, key, carlosId)).rejects.toBeInstanceOf(ConflictException);
+      expect(await balanceOf(anaId)).toBe(50_000);
+      expect(await balanceOf(carlosId)).toBe(0);
+    });
+
+    it('no abona a una cuenta inactiva ni en una moneda que Wompi no maneja', async () => {
+      const blocked = randomUUID();
+      const dollars = randomUUID();
+      accounts.set(blocked, account(blocked, '10000000003', ANA, 'blocked'));
+      accounts.set(dollars, { ...account(dollars, '10000000004', ANA), currency: 'USD' });
+
+      await expect(cashIn(10_000, randomUUID(), blocked)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(cashIn(10_000, randomUUID(), dollars)).rejects.toThrow('Moneda no soportada');
+      expect(await count(LedgerTransaction)).toBe(0);
+    });
   });
 });
