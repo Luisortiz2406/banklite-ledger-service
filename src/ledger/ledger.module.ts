@@ -10,7 +10,7 @@ import { LedgerBalance } from './entities/ledger-balance.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
 import { LedgerOutbox } from './entities/ledger-outbox.entity';
 import { LedgerTransaction } from './entities/ledger-transaction.entity';
-import { InternalLedgerController, LedgerController } from './ledger.controller';
+import { InternalBalanceController, InternalLedgerController, LedgerController } from './ledger.controller';
 import { LedgerService } from './ledger.service';
 import { AdminLedgerController } from './admin-ledger.controller';
 import { AdminAudit } from '../common/staff/admin-audit.entity';
@@ -24,7 +24,7 @@ import { OutboxService } from './outbox.service';
     JwtModule.register({}),
     TypeOrmModule.forFeature([LedgerBalance, LedgerEntry, LedgerTransaction, LedgerOutbox, AdminAudit]),
   ],
-  controllers: [AdminLedgerController, LedgerController, InternalLedgerController],
+  controllers: [AdminLedgerController, LedgerController, InternalLedgerController, InternalBalanceController],
   providers: [
     LedgerService,
     AccountsClientService,

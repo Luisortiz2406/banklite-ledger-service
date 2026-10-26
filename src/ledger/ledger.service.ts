@@ -158,6 +158,16 @@ export class LedgerService {
     };
   }
 
+  /**
+   * Saldo de una cuenta para account-service (red interna, sin token del cliente):
+   * lo vuelve a consultar después de cancelar una cuenta, para detectar dinero que
+   * haya llegado justo en el cierre. No valida el titular: lo hace quien llama.
+   */
+  async getInternalBalance(accountId: string) {
+    const balance = await this.balances.findOne({ where: { accountId } });
+    return { accountId, balance: balance ? Number(balance.balance) : 0 };
+  }
+
   /** Movimientos de una cuenta propia, del más reciente al más antiguo, paginados y filtrables por fecha. */
   async getTransactions(accountId: string, accessToken: string, query: TransactionsQueryDto) {
     await this.accounts.getOwnedAccount(accountId, accessToken);

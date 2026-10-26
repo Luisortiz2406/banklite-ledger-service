@@ -1,8 +1,11 @@
 import {
   Body,
+  CanActivate,
   Controller,
+  ExecutionContext,
   ForbiddenException,
   Get,
+  Injectable,
   Param,
   ParseUUIDPipe,
   Post,
@@ -69,9 +72,24 @@ export class LedgerController {
   }
 }
 
+// Servicios que el ledger acepta solo para LEER: su clave interna no sirve para mover dinero.
+const READ_ONLY_CALLERS = new Set(['account']);
+
+/** Rechaza a los servicios de solo lectura en las rutas que mueven dinero. Va después de InternalKeyGuard. */
+@Injectable()
+export class MoneyCallerGuard implements CanActivate {
+  canActivate(context: ExecutionContext): boolean {
+    const caller = context.switchToHttp().getRequest<Request & { internalCaller?: string }>().internalCaller;
+    if (!caller || READ_ONLY_CALLERS.has(caller)) {
+      throw new ForbiddenException('Este servicio no puede registrar movimientos en el ledger.');
+    }
+    return true;
+  }
+}
+
 /** Operaciones entre servicios / del banco: requieren la clave interna, nunca un JWT de cliente. */
 @Controller('ledger/internal')
-@UseGuards(InternalKeyGuard)
+@UseGuards(InternalKeyGuard, MoneyCallerGuard)
 export class InternalLedgerController {
   constructor(private readonly ledger: LedgerService) {}
 
@@ -120,5 +138,21 @@ export class InternalLedgerController {
   @Get('reconciliation')
   reconcile() {
     return this.ledger.reconcile();
+  }
+}
+
+/** Consultas entre servicios que no mueven dinero. */
+@Controller('ledger/internal/accounts')
+@UseGuards(InternalKeyGuard)
+export class InternalBalanceController {
+  constructor(private readonly ledger: LedgerService) {}
+
+  /** Saldo de una cuenta: solo account-service (revisión después de cancelar una cuenta). */
+  @Get(':account_id/balance')
+  balance(@Param('account_id', ParseUUIDPipe) accountId: string, @Req() request: Request) {
+    if ((request as any).internalCaller !== 'account') {
+      throw new ForbiddenException('Solo account-service puede consultar este saldo.');
+    }
+    return this.ledger.getInternalBalance(accountId);
   }
 }
