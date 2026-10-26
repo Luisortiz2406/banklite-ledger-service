@@ -32,7 +32,7 @@ que la registre por la red interna.
 | Publica eventos | `transaction.completed` (uno por titular afectado) → fraud, compliance, notification, rewards. Los movimientos `saving` y los canjes a comercios no publican eventos. |
 | Consume eventos | — |
 | Llama a | account-service: titular, estado y límites de la cuenta |
-| Lo llaman | transfer, card, payment, rewards, savings y deposit: `/ledger/internal/*` y `POST /ledger/transfers`<br>api-gateway (rutas `/ledger/*`) |
+| Lo llaman | transfer, card, payment, rewards, savings y deposit: `/ledger/internal/*` y `POST /ledger/transfers`<br>account: saldo de las cuentas que se cancelaron (`GET /ledger/internal/accounts/:id/balance`)<br>api-gateway (rutas `/ledger/*`) |
 | Integraciones externas | — |
 
 Todo el tráfico externo entra por el **api-gateway** (único servicio público), que
@@ -145,6 +145,7 @@ A través del gateway las rutas son las mismas (`http://localhost:8080/ledger/..
 | POST | `/ledger/internal/savings` | Bolsillos, metas y CDT: custodia e intereses. |
 | POST | `/ledger/internal/cash-ins` | Recarga con Wompi contra la cuenta de sistema Compensación Wompi (tipo `deposit`). **Solo deposit-service**; idempotente por la clave que deriva del id de la transacción de Wompi. |
 | POST | `/ledger/internal/transactions/:transaction_id/reversal` | Reversa de una transacción. |
+| GET | `/ledger/internal/accounts/:account_id/balance` | Saldo de una cuenta. **Solo account-service**: lo vuelve a consultar después de cancelar una cuenta (alerta «cuenta cerrada con saldo»). No valida el titular. |
 | GET | `/ledger/internal/reconciliation` | Conciliación saldos vs. asientos. |
 
 ## Variables de entorno
@@ -163,7 +164,7 @@ todas se configuran como variables del servicio, nunca en el código.
 | `STAFF_JWT_SECRET` | **Sí** (no arranca sin ella) | — | Firma de los JWT de empleados del panel (el mismo que en auth-service; distinto de JWT_SECRET). |
 | `ACCOUNT_SERVICE_URL` | Sí | `http://localhost:3002` | URL interna de account-service. |
 | `INTERNAL_API_KEY` | **Sí** (no arranca sin ella) | — | Clave interna **propia** de este servicio; la manda en `x-internal-key` al llamar a otros. |
-| `INTERNAL_TRUSTED_KEYS` | **Sí** (no arranca sin ella) | `transfer:<clave-de-transfer>,card:<clave-de-card>,payment:<clave-de-payment>,rewards:<clave-de-rewards>,savings:<clave-de-savings>,deposit:<clave-de-deposit>` | Claves internas que acepta, `servicio:clave,servicio:clave` (ver `InternalKeyGuard`). |
+| `INTERNAL_TRUSTED_KEYS` | **Sí** (no arranca sin ella) | `transfer:<clave-de-transfer>,card:<clave-de-card>,payment:<clave-de-payment>,rewards:<clave-de-rewards>,savings:<clave-de-savings>,deposit:<clave-de-deposit>,account:<clave-de-account>` | Claves internas que acepta, `servicio:clave,servicio:clave` (ver `InternalKeyGuard`). |
 | `RABBITMQ_URL` | No | `amqp://banklite:<RABBITMQ_PASSWORD>@localhost:5672` | Conexión a RabbitMQ. Sin ella los eventos quedan en el outbox (o no se consumen). |
 | `RABBITMQ_EXCHANGE` | No | `banklite.events` | Exchange topic de eventos (`banklite.events`). |
 | `NODE_ENV` | No | `development` | `development` en local; `production` en Railway (lo fija el Dockerfile). |
@@ -206,7 +207,7 @@ despliega desde su propio repositorio.
 | Repositorio | Relación con este servicio |
 |---|---|
 | [banklite-api-gateway](https://github.com/Luisortiz2406/banklite-api-gateway) | **Lo llama:** punto de entrada público, le enruta las rutas de este servicio |
-| [banklite-account-service](https://github.com/Luisortiz2406/banklite-account-service) | **Llama a:** titular, estado y límites de la cuenta |
+| [banklite-account-service](https://github.com/Luisortiz2406/banklite-account-service) | **Llama a:** titular, estado y límites de la cuenta<br>**Lo llama:** saldo de las cuentas canceladas (`GET /ledger/internal/accounts/:id/balance`) |
 | [banklite-transfer-service](https://github.com/Luisortiz2406/banklite-transfer-service) | **Lo llama:** registrar transferencias (`POST /ledger/transfers`) |
 | [banklite-card-service](https://github.com/Luisortiz2406/banklite-card-service) | **Lo llama:** cargos de tarjeta y suscripciones |
 | [banklite-payment-service](https://github.com/Luisortiz2406/banklite-payment-service) | **Lo llama:** pagos, recargas y pagos QR |

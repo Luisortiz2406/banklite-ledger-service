@@ -283,6 +283,15 @@ describeWithDb('LedgerService (PostgreSQL)', () => {
     });
   });
 
+  it('saldo interno (account-service): el saldo actual, o 0 si la cuenta nunca se movió', async () => {
+    await credit(anaId, 80_000);
+    await transfer(30_000);
+    expect(await ledger.getInternalBalance(anaId)).toEqual({ accountId: anaId, balance: 50_000 });
+    expect(await ledger.getInternalBalance(carlosId)).toEqual({ accountId: carlosId, balance: 30_000 });
+    const nueva = randomUUID();
+    expect(await ledger.getInternalBalance(nueva)).toEqual({ accountId: nueva, balance: 0 });
+  });
+
   it('la cuenta de consignaciones de prueba no se usa fuera de su flujo', async () => {
     await credit(anaId, 1_000);
     expect(await balanceOf(DEMO_DEPOSIT_COP)).toBe(0);
