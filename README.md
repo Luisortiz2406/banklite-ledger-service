@@ -187,6 +187,15 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm test
 Sin `TEST_DATABASE_URL` se omiten en local; en la CI son obligatorias (el workflow
 levanta un Postgres de servicio).
 
+También se prueban los cargos, pagos a comercio, canjes, ahorro, abonos del panel,
+consignaciones de prueba y reversos (saldo insuficiente, idempotencia y que un rechazo
+no deje asientos ni eventos a medias), el relay del outbox, el panel administrativo con
+su auditoría, los guards y la validación de la configuración.
+
+**Cobertura:** el pipeline la muestra en el resumen de cada corrida y exige un mínimo de
+70 % de líneas y 50 % de ramas (`umbral-lineas` y `umbral-ramas` en `deploy.yml`). Hoy
+está en 86,8 % de líneas y 88,1 % de ramas.
+
 ## Despliegue
 
 Lo despliega **GitHub Actions** (`.github/workflows/deploy.yml`, que usa el workflow
