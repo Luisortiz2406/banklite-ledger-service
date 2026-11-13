@@ -9,6 +9,7 @@ import { LedgerTransaction } from './ledger/entities/ledger-transaction.entity';
 import { AdminAudit } from './common/staff/admin-audit.entity';
 import { HealthController } from './health.controller';
 import { validateEnv } from './config/env.validation';
+import { MetricsModule } from './metrics/metrics.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { validateEnv } from './config/env.validation';
       }),
     }),
     LedgerModule,
+    MetricsModule,
   ],
   controllers: [HealthController],
 })
