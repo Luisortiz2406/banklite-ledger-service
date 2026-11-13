@@ -193,6 +193,24 @@ consignaciones de prueba y reversos (saldo insuficiente, idempotencia y que un r
 no deje asientos ni eventos a medias), el relay del outbox, el panel administrativo con
 su auditoría, los guards y la validación de la configuración.
 
+### Prueba unitaria aislada de la lógica de dinero (con mocks)
+
+Archivo: `src/ledger/ledger.money-rules.unit.spec.ts` (suite «LedgerService: reglas de dinero, aisladas con mocks»).
+
+A diferencia de las anteriores, **no usa base de datos**: `DataSource` y su administrador de transacción, el cliente de account-service y el outbox son mocks, así que corre igual con o sin `TEST_DATABASE_URL`. Prueba `LedgerService` real, regla por regla:
+
+- Transferencia: transacción `SERIALIZABLE`, dos asientos que suman cero (`-50000.00` y `50000.00`), un `UPDATE` que resta al origen y otro que suma al destino, un evento `transaction.completed` por titular (uno solo si son del mismo) y publicación inmediata.
+- Saldo: sin saldo suficiente es 400 y no se escribe nada; con el saldo justo pasa.
+- Límites: superar el límite diario o el mensual es 403 sin escribir nada; justo en el límite pasa.
+- Validaciones previas (400 antes de abrir la transacción): misma cuenta, origen o destino inactivos, cuenta de comercio y monedas distintas.
+- Idempotencia: la misma operación con la misma clave devuelve la transacción ya registrada sin escribir ni avisar; con otro monto, otro destino u otro usuario es 409.
+- Reversos: el dinero vuelve en sentido contrario con el mismo monto y avisando a ambos; no consume cupo; sin saldo en quien recibió es 400; no se reversa lo inexistente (404), un reverso (400) ni algo ya reversado (409); una cuenta del sistema puede quedar en negativo.
+- Concurrencia: `40001` y `40P01` se reintentan (la transacción completa) y se escribe una sola vez; tras 4 intentos se devuelve el error y uno que no es de concurrencia no se reintenta.
+
+```bash
+npm test -- ledger.money-rules      # solo esta prueba (no necesita base de datos)
+```
+
 **Cobertura:** el pipeline la muestra en el resumen de cada corrida y exige un mínimo de
 70 % de líneas y 50 % de ramas (`umbral-lineas` y `umbral-ramas` en `deploy.yml`). Hoy
 está en 86,8 % de líneas y 88,1 % de ramas.
