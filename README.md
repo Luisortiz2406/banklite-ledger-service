@@ -172,6 +172,7 @@ todas se configuran como variables del servicio, nunca en el código.
 | `DEMO_DEPOSIT_MAX_AMOUNT` | No | `5000000` | Tope de una consignación de prueba. |
 | `ADMIN_CREDIT_MAX_AMOUNT` | No | `10000000` | Tope de un abono administrativo. |
 | `HTTP_READ_RETRIES` | No | `1` | Reintentos de las lecturas (GET) a otros servicios; las escrituras no se reintentan. |
+| `METRICS_PORT` | No | `9100` | Puerto de `GET /metrics` (Prometheus), solo para la red privada; **no** es el puerto público (`PORT`). `off` lo apaga. |
 
 ## Pruebas
 
