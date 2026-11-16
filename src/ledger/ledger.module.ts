@@ -17,6 +17,7 @@ import { AdminAudit } from '../common/staff/admin-audit.entity';
 import { AdminAuditService } from '../common/staff/admin-audit.service';
 import { StaffAuthGuard } from '../common/staff/staff-auth.guard';
 import { OutboxService } from './outbox.service';
+import { AppendOnlyService } from './append-only.service';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { OutboxService } from './outbox.service';
     AccountsClientService,
     EventPublisherService,
     OutboxService,
+    AppendOnlyService,
     JwtAuthGuard,
     InternalKeyGuard,
     AdminAuditService,
